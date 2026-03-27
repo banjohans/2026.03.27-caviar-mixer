@@ -22,6 +22,8 @@ import {
   X,
   BarChart3,
   GripVertical,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react";
 
 /* ── helpers ── */
@@ -61,6 +63,69 @@ function computePeaks(buf, n = 1200) {
     p[i] = mx;
   }
   return p;
+}
+
+function MiniWave({ id, peaks, color, muted, progress }) {
+  if (!peaks || peaks.length === 0) return null;
+  const n = 120;
+  const step = Math.max(1, Math.floor(peaks.length / n));
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    let mx = 0;
+    const s = i * step;
+    for (let j = s; j < s + step && j < peaks.length; j++) {
+      if (peaks[j] > mx) mx = peaks[j];
+    }
+    pts.push(mx);
+  }
+  const vw = 200;
+  const vh = 60;
+  const cy = vh / 2;
+  let d = `M 0 ${cy}`;
+  for (let i = 0; i < pts.length; i++) {
+    const x = (i / (pts.length - 1)) * vw;
+    const h = pts[i] * cy * 0.85;
+    d += ` L ${x.toFixed(1)} ${(cy - h).toFixed(1)}`;
+  }
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const x = (i / (pts.length - 1)) * vw;
+    const h = pts[i] * cy * 0.85;
+    d += ` L ${x.toFixed(1)} ${(cy + h).toFixed(1)}`;
+  }
+  d += " Z";
+  const px = (progress || 0) * vw;
+  const clipId = `wave-clip-${id}`;
+  return (
+    <svg
+      viewBox={`0 0 ${vw} ${vh}`}
+      preserveAspectRatio="none"
+      className="absolute inset-0 w-full h-full pointer-events-none"
+    >
+      <defs>
+        <clipPath id={clipId}>
+          <rect x="0" y="0" width={px.toFixed(1)} height={vh} />
+        </clipPath>
+      </defs>
+      <path d={d} fill={muted ? "#94a3b8" : color} opacity={0.1} />
+      <path
+        d={d}
+        fill={muted ? "#94a3b8" : color}
+        opacity={0.25}
+        clipPath={`url(#${clipId})`}
+      />
+      {progress > 0 && progress < 1 && (
+        <line
+          x1={px.toFixed(1)}
+          y1="0"
+          x2={px.toFixed(1)}
+          y2={vh}
+          stroke={muted ? "#94a3b8" : color}
+          strokeWidth="1"
+          opacity={0.5}
+        />
+      )}
+    </svg>
+  );
 }
 
 function computeRms(buf, from, to) {
@@ -293,16 +358,16 @@ function pctStr(v) {
 }
 
 const TRACK_COLORS = [
-  "#3b82f6",
-  "#8b5cf6",
-  "#06b6d4",
-  "#f59e0b",
-  "#ef4444",
-  "#10b981",
-  "#ec4899",
-  "#6366f1",
-  "#14b8a6",
-  "#f97316",
+  "#e8453c",
+  "#f5a623",
+  "#c9590a",
+  "#d4463a",
+  "#e09520",
+  "#b73d2a",
+  "#d97b1a",
+  "#a83828",
+  "#cc6b10",
+  "#f0892d",
 ];
 
 /* ── static waveform drawing ── */
@@ -333,7 +398,7 @@ function drawWave(
   ctx.clearRect(0, 0, w, h);
 
   const td = totalDur || duration;
-  ctx.fillStyle = "#f8fafc";
+  ctx.fillStyle = "#fdf6f0";
   ctx.fillRect(0, 0, w, h);
   if (!peaks || !peaks.length || td <= 0) return;
 
@@ -345,7 +410,7 @@ function drawWave(
   if (segEnd > segStart) {
     const ss = (segStart / td) * w,
       se = (segEnd / td) * w;
-    ctx.fillStyle = "rgba(16,185,129,0.12)";
+    ctx.fillStyle = "rgba(245,166,35,0.15)";
     ctx.fillRect(ss, 0, se - ss, h);
     ctx.fillStyle = "rgba(0,0,0,0.04)";
     ctx.fillRect(0, 0, ss, h);
@@ -367,14 +432,14 @@ function drawWave(
       const zs = (z.start / td) * w,
         ze = (z.end / td) * w;
       // semi-transparent red fill
-      ctx.fillStyle = "rgba(239,68,68,0.15)";
+      ctx.fillStyle = "rgba(232,69,60,0.15)";
       ctx.fillRect(zs, 0, ze - zs, h);
       // diagonal stripes
       ctx.save();
       ctx.beginPath();
       ctx.rect(zs, 0, ze - zs, h);
       ctx.clip();
-      ctx.strokeStyle = "rgba(239,68,68,0.3)";
+      ctx.strokeStyle = "rgba(232,69,60,0.3)";
       ctx.lineWidth = 1;
       for (let sx = zs - h; sx < ze + h; sx += 8) {
         ctx.beginPath();
@@ -384,7 +449,7 @@ function drawWave(
       }
       ctx.restore();
       // boundary lines
-      ctx.strokeStyle = "#ef4444";
+      ctx.strokeStyle = "#e8453c";
       ctx.lineWidth = 1.5;
       ctx.setLineDash([2, 2]);
       [zs, ze].forEach((lx) => {
@@ -401,7 +466,7 @@ function drawWave(
   if (segEnd > segStart) {
     const ss = (segStart / td) * w,
       se = (segEnd / td) * w;
-    ctx.strokeStyle = "#10b981";
+    ctx.strokeStyle = "#c9590a";
     ctx.lineWidth = 1.5;
     ctx.setLineDash([3, 3]);
     [ss, se].forEach((lx) => {
@@ -422,8 +487,6 @@ const WaveformTrack = memo(function WaveformTrack({
   segmentLength,
   playhead,
   singlePlayhead,
-  isA,
-  isB,
   isSolo,
   onSeek,
   onSetSegStart,
@@ -553,7 +616,7 @@ const WaveformTrack = memo(function WaveformTrack({
 
   return (
     <div
-      className={`rounded-2xl border bg-white p-3 shadow-sm ${isSolo ? "ring-2 ring-blue-400" : ""} ${track.muted ? "opacity-50" : ""}`}
+      className={`rounded-2xl border border-[#d4a87a]/40 bg-white/80 p-3 shadow-sm ${isSolo ? "ring-2 ring-[#e8453c]" : ""} ${track.muted ? "opacity-50" : ""}`}
     >
       {/* header */}
       <div className="flex items-center gap-2 mb-2 flex-wrap">
@@ -564,39 +627,28 @@ const WaveformTrack = memo(function WaveformTrack({
         <span className="font-medium text-sm truncate max-w-[200px]">
           {track.name}
         </span>
-        <span className="text-xs text-slate-400">{fmt(dur)}</span>
-
-        {isA && (
-          <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
-            A
-          </span>
-        )}
-        {isB && (
-          <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700">
-            B
-          </span>
-        )}
+        <span className="text-xs text-[#9a6a40]">{fmt(dur)}</span>
 
         <div className="flex-1" />
 
         <div className="flex items-center gap-0.5 rounded-lg border px-1 py-0.5">
           <button
             onClick={() => onSkipSegment(track.id, -1)}
-            className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-slate-800"
+            className="p-1 rounded hover:bg-[#f5e6d0] text-[#9a6a40] hover:text-[#3a1a00]"
             title="Previous segment"
           >
             <SkipBack size={14} />
           </button>
           <button
             onClick={() => onPlaySingle(track.id)}
-            className="p-1 rounded hover:bg-slate-100"
+            className="p-1 rounded hover:bg-[#f5e6d0]"
             title="Play this track solo"
           >
             {singlePlaying ? <Pause size={14} /> : <Play size={14} />}
           </button>
           <button
             onClick={() => onSkipSegment(track.id, 1)}
-            className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-slate-800"
+            className="p-1 rounded hover:bg-[#f5e6d0] text-[#9a6a40] hover:text-[#3a1a00]"
             title="Next segment"
           >
             <SkipForward size={14} />
@@ -606,22 +658,22 @@ const WaveformTrack = memo(function WaveformTrack({
         <div className="flex items-center gap-0.5 rounded-lg border px-1 py-0.5">
           <button
             onClick={() => setPunchMode("segment")}
-            className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${punchMode === "segment" ? "bg-emerald-100 text-emerald-700" : "text-slate-400 hover:text-slate-600"}`}
+            className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${punchMode === "segment" ? "bg-[#f5a623]/20 text-[#c9590a]" : "text-[#9a6a40] hover:text-[#3a1a00]"}`}
             title="Punch-modus: Segment"
           >
             SEG
           </button>
           <button
             onClick={() => setPunchMode("skip")}
-            className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${punchMode === "skip" ? "bg-red-100 text-red-700" : "text-slate-400 hover:text-slate-600"}`}
+            className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${punchMode === "skip" ? "bg-red-100 text-red-700" : "text-[#9a6a40] hover:text-[#3a1a00]"}`}
             title="Punch mode: Skip zone"
           >
             SKIP
           </button>
-          <div className="w-px h-4 bg-slate-200 mx-0.5" />
+          <div className="w-px h-4 bg-[#d4a87a]/40 mx-0.5" />
           <button
             onClick={() => onPunchIn(track.id, punchMode)}
-            className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${isPunchActive ? "bg-pink-500 text-white" : "text-slate-500 hover:bg-slate-100"}`}
+            className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${isPunchActive ? "bg-[#e8453c] text-white" : "text-[#9a6a40] hover:bg-[#f5e6d0]"}`}
             title="Punch In — mark start point"
           >
             IN
@@ -629,7 +681,7 @@ const WaveformTrack = memo(function WaveformTrack({
           <button
             onClick={() => onPunchOut(track.id)}
             disabled={!isPunchActive}
-            className="px-1.5 py-0.5 rounded text-[10px] font-bold text-slate-500 hover:bg-slate-100 disabled:opacity-30"
+            className="px-1.5 py-0.5 rounded text-[10px] font-bold text-[#9a6a40] hover:bg-[#f5e6d0] disabled:opacity-30"
             title="Punch Out — mark end point"
           >
             OUT
@@ -637,14 +689,14 @@ const WaveformTrack = memo(function WaveformTrack({
         </div>
         <button
           onClick={() => onToggleSolo(track.id)}
-          className={`p-1.5 rounded-lg text-xs font-bold ${isSolo ? "bg-blue-500 text-white" : "hover:bg-slate-100 text-slate-500"}`}
+          className={`p-1.5 rounded-lg text-xs font-bold ${isSolo ? "bg-[#e8453c] text-white" : "hover:bg-[#f5e6d0] text-[#9a6a40]"}`}
           title="Solo"
         >
           <Headphones size={14} />
         </button>
         <button
           onClick={() => onToggleMute(track.id)}
-          className={`p-1.5 rounded-lg ${track.muted ? "bg-red-100 text-red-600" : "hover:bg-slate-100 text-slate-500"}`}
+          className={`p-1.5 rounded-lg ${track.muted ? "bg-red-100 text-red-600" : "hover:bg-[#f5e6d0] text-[#9a6a40]"}`}
           title="Mute"
         >
           {track.muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
@@ -657,7 +709,7 @@ const WaveformTrack = memo(function WaveformTrack({
           step="0.01"
           value={track.volume}
           onChange={(e) => onSetVolume(track.id, e.target.value)}
-          className="w-20 accent-slate-600"
+          className="w-20 accent-[#c9590a]"
           style={{ height: "4px" }}
           title={`Volume: ${Math.round(track.volume * 100)}%`}
         />
@@ -666,7 +718,7 @@ const WaveformTrack = memo(function WaveformTrack({
           className="flex items-center gap-0.5 rounded-lg border px-1.5 py-1"
           title={`Pan: ${(track.pan || 0) > 0 ? `R ${Math.round((track.pan || 0) * 100)}%` : (track.pan || 0) < 0 ? `L ${Math.round(Math.abs(track.pan || 0) * 100)}%` : "Center"}`}
         >
-          <span className="text-[9px] font-semibold text-slate-400">L</span>
+          <span className="text-[9px] font-semibold text-[#9a6a40]">L</span>
           <input
             type="range"
             min="-1"
@@ -675,15 +727,15 @@ const WaveformTrack = memo(function WaveformTrack({
             value={track.pan || 0}
             onChange={(e) => onSetPan(track.id, e.target.value)}
             onDoubleClick={() => onSetPan(track.id, 0)}
-            className="w-14 accent-cyan-500"
+            className="w-14 accent-[#f5a623]"
             style={{ height: "4px" }}
           />
-          <span className="text-[9px] font-semibold text-slate-400">R</span>
+          <span className="text-[9px] font-semibold text-[#9a6a40]">R</span>
         </div>
 
         <button
           onClick={() => onRemove(track.id)}
-          className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-500"
+          className="p-1.5 rounded-lg hover:bg-red-50 text-[#9a6a40] hover:text-red-500"
           title="Remove"
         >
           <Trash2 size={14} />
@@ -692,7 +744,7 @@ const WaveformTrack = memo(function WaveformTrack({
 
       {/* waveform */}
       <div
-        className="relative w-full rounded-lg border bg-slate-50"
+        className="relative w-full rounded-lg border border-[#d4a87a]/40 bg-[#fdf6f0]"
         style={{ overflow: "visible" }}
       >
         <canvas
@@ -707,7 +759,7 @@ const WaveformTrack = memo(function WaveformTrack({
           style={{ left: `${phPct}%`, zIndex: 10 }}
         >
           <div
-            style={{ width: "2px", height: "100%", background: "#ef4444" }}
+            style={{ width: "2px", height: "100%", background: "#e8453c" }}
           />
         </div>
         <div
@@ -719,7 +771,7 @@ const WaveformTrack = memo(function WaveformTrack({
             zIndex: 11,
           }}
         >
-          <span className="rounded bg-red-500 px-1 py-px text-[9px] font-bold text-white whitespace-nowrap">
+          <span className="rounded bg-[#e8453c] px-1 py-px text-[9px] font-bold text-white whitespace-nowrap">
             {fmt(trackPos)}
           </span>
         </div>
@@ -731,7 +783,7 @@ const WaveformTrack = memo(function WaveformTrack({
               style={{ left: `${singlePct}%`, zIndex: 12 }}
             >
               <div
-                style={{ width: "2px", height: "100%", background: "#06b6d4" }}
+                style={{ width: "2px", height: "100%", background: "#f0892d" }}
               />
             </div>
             <div
@@ -743,7 +795,7 @@ const WaveformTrack = memo(function WaveformTrack({
                 zIndex: 13,
               }}
             >
-              <span className="rounded bg-cyan-500 px-1 py-px text-[9px] font-bold text-white whitespace-nowrap">
+              <span className="rounded bg-[#f0892d] px-1 py-px text-[9px] font-bold text-white whitespace-nowrap">
                 ♪ {fmt(singlePos)}
               </span>
             </div>
@@ -760,7 +812,7 @@ const WaveformTrack = memo(function WaveformTrack({
                 style={{
                   width: "2px",
                   height: "100%",
-                  background: "#f59e0b",
+                  background: "#c9590a",
                 }}
               />
             </div>
@@ -773,7 +825,7 @@ const WaveformTrack = memo(function WaveformTrack({
                 zIndex: 11,
               }}
             >
-              <span className="rounded bg-amber-500 px-1 py-px text-[9px] font-bold text-white whitespace-nowrap">
+              <span className="rounded bg-[#c9590a] px-1 py-px text-[9px] font-bold text-white whitespace-nowrap">
                 ▶ {fmt(segS)}
               </span>
             </div>
@@ -790,7 +842,7 @@ const WaveformTrack = memo(function WaveformTrack({
                 style={{
                   width: "2px",
                   height: "100%",
-                  background: "#ec4899",
+                  background: "#e8453c",
                   opacity: 0.8,
                 }}
               />
@@ -804,7 +856,7 @@ const WaveformTrack = memo(function WaveformTrack({
                 zIndex: 15,
               }}
             >
-              <span className="rounded bg-pink-500 px-1 py-px text-[9px] font-bold text-white whitespace-nowrap">
+              <span className="rounded bg-[#e8453c] px-1 py-px text-[9px] font-bold text-white whitespace-nowrap">
                 IN {fmt(punchInTime)}
               </span>
             </div>
@@ -813,14 +865,14 @@ const WaveformTrack = memo(function WaveformTrack({
       </div>
 
       {/* analysis + segment info */}
-      <div className="mt-3 flex items-center gap-3 text-[11px] text-slate-500 flex-wrap">
+      <div className="mt-3 flex items-center gap-3 text-[11px] text-[#9a6a40] flex-wrap">
         {segS > 0 && (
           <span className="flex items-center gap-1">
-            <span className="inline-block w-2 h-2 rounded-full bg-amber-500" />
+            <span className="inline-block w-2 h-2 rounded-full bg-[#c9590a]" />
             Segment: {fmt(segS)} – {fmt(segE)}
             <button
               onClick={() => onSetSegStart(track.id, 0)}
-              className="ml-1 text-amber-600 hover:text-amber-800 underline"
+              className="ml-1 text-[#c9590a] hover:text-[#a83828] underline"
             >
               reset
             </button>
@@ -834,7 +886,7 @@ const WaveformTrack = memo(function WaveformTrack({
             </span>
           </>
         )}
-        <span className="text-slate-400 ml-auto">
+        <span className="text-[#b89070] ml-auto">
           Drag = segment · Alt+drag = skip zone · Punch IN/OUT = precise points
         </span>
       </div>
@@ -902,9 +954,13 @@ export default function AudioCompareApp() {
   const [playhead, setPlayhead] = useState(0);
   const [segmentLength, setSegmentLength] = useState(0);
   const [loopRegion, setLoopRegion] = useState(true);
-  const [crossfadeA, setCrossfadeA] = useState(0);
-  const [crossfadeB, setCrossfadeB] = useState(1);
-  const [crossfadeValue, setCrossfadeValue] = useState(0.5);
+  const [mixPos, setMixPos] = useState({ x: 0, y: 0 });
+  const [showCrossfader, setShowCrossfader] = useState(false);
+  const [showABFader, setShowABFader] = useState(false);
+  const [abMode, setAbMode] = useState(false);
+  const [abTrackA, setAbTrackA] = useState(0);
+  const [abTrackB, setAbTrackB] = useState(1);
+  const [abValue, setAbValue] = useState(0.5);
   const [soloId, setSoloId] = useState(null);
   const [singlePlayId, setSinglePlayId] = useState(null);
   const [singlePlayhead, setSinglePlayhead] = useState(null);
@@ -924,6 +980,8 @@ export default function AudioCompareApp() {
   const singleTrackRef = useRef(null);
   const decodedBuffers = useRef({});
   const pannerNodes = useRef({});
+  const gainNodes = useRef({});
+  const [gainMatch, setGainMatch] = useState(false);
   const segmentLengthRef = useRef(0);
   const loopRegionRef = useRef(true);
   const tracksRef = useRef([]);
@@ -952,6 +1010,69 @@ export default function AudioCompareApp() {
     tracksRef.current = tracks;
   }, [tracks]);
 
+  /* compute polygon vertex positions for all tracks */
+  const polyVertices = useMemo(() => {
+    const n = tracks.length;
+    if (n === 0) return [];
+    if (n === 1) return [{ x: 0, y: 0 }];
+    if (n === 2)
+      return [
+        { x: -1, y: 0 },
+        { x: 1, y: 0 },
+      ];
+    return Array.from({ length: n }, (_, i) => {
+      const angle = -Math.PI / 2 + (2 * Math.PI * i) / n;
+      return { x: Math.cos(angle), y: Math.sin(angle) };
+    });
+  }, [tracks.length]);
+
+  /* compute mix weights from mixPos — muted tracks get 0 */
+  const mixWeights = useMemo(() => {
+    const n = tracks.length;
+    if (n === 0) return [];
+    if (n === 1) return [tracks[0].muted ? 0 : 1];
+    const dists = polyVertices.map((v) => {
+      const dx = mixPos.x - v.x,
+        dy = mixPos.y - v.y;
+      return Math.sqrt(dx * dx + dy * dy);
+    });
+    const eps = 0.001;
+    /* zero out muted distances so they don't participate */
+    const activeDists = dists.map((d, i) => (tracks[i].muted ? Infinity : d));
+    const snap = activeDists.findIndex((d) => d < eps);
+    if (snap >= 0) return activeDists.map((_, i) => (i === snap ? 1 : 0));
+    const inv = activeDists.map((d) => (d === Infinity ? 0 : 1 / (d * d)));
+    const sum = inv.reduce((a, b) => a + b, 0);
+    if (sum === 0) return tracks.map(() => 0);
+    return inv.map((w) => w / sum);
+  }, [tracks, polyVertices, mixPos]);
+
+  /* gain matching compensation */
+  const gainCompensation = useMemo(() => {
+    if (!gainMatch) return {};
+    const withRms = tracks.filter((t) => t.rms > 0);
+    if (withRms.length < 2) return {};
+    const targetRms = withRms.reduce((s, t) => s + t.rms, 0) / withRms.length;
+    const comp = {};
+    tracks.forEach((t) => {
+      if (t.rms > 0) {
+        comp[t.id] = clamp(targetRms / t.rms, 0.1, 10);
+      } else {
+        comp[t.id] = 1;
+      }
+    });
+    return comp;
+  }, [tracks, gainMatch]);
+
+  /* apply gain compensation via GainNodes */
+  useEffect(() => {
+    tracks.forEach((t) => {
+      const node = gainNodes.current[t.id];
+      if (!node) return;
+      node.gain.value = gainMatch ? (gainCompensation[t.id] ?? 1) : 1;
+    });
+  }, [tracks, gainMatch, gainCompensation]);
+
   /* volume logic */
   useEffect(() => {
     tracks.forEach((track, i) => {
@@ -961,15 +1082,27 @@ export default function AudioCompareApp() {
         return;
       }
       let v = track.muted ? 0 : track.volume;
-      const a = Number(crossfadeA),
-        b = Number(crossfadeB);
-      if (a !== b) {
-        if (i === a) v *= 1 - crossfadeValue;
-        else if (i === b) v *= crossfadeValue;
+      if (tracks.length >= 2) {
+        if (abMode) {
+          if (i === abTrackA) v *= 1 - abValue;
+          else if (i === abTrackB) v *= abValue;
+          else v = 0;
+        } else if (showCrossfader) {
+          v *= mixWeights[i] ?? 0;
+        }
       }
       track.audio.volume = clamp(v, 0, 1);
     });
-  }, [tracks, crossfadeA, crossfadeB, crossfadeValue, soloId]);
+  }, [
+    tracks,
+    mixWeights,
+    soloId,
+    abMode,
+    abTrackA,
+    abTrackB,
+    abValue,
+    showCrossfader,
+  ]);
 
   /* apply pan */
   useEffect(() => {
@@ -1214,9 +1347,12 @@ export default function AudioCompareApp() {
         const ctx = audioCtxRef.current;
         try {
           const source = ctx.createMediaElementSource(t.audio);
+          const gain = ctx.createGain();
           const panner = ctx.createStereoPanner();
-          source.connect(panner);
+          source.connect(gain);
+          gain.connect(panner);
           panner.connect(ctx.destination);
+          gainNodes.current[t.id] = gain;
           pannerNodes.current[t.id] = panner;
         } catch (_) {}
       };
@@ -1227,9 +1363,12 @@ export default function AudioCompareApp() {
           .decodeAudioData(buf.slice(0))
           .then((decoded) => {
             decodedBuffers.current[t.id] = decoded;
+            const rmsData = computeRms(decoded, 0, decoded.duration);
             setTracks((prev) =>
               prev.map((p) =>
-                p.id === t.id ? { ...p, peaks: computePeaks(decoded) } : p,
+                p.id === t.id
+                  ? { ...p, peaks: computePeaks(decoded), rms: rmsData.rms }
+                  : p,
               ),
             );
           })
@@ -1246,6 +1385,7 @@ export default function AudioCompareApp() {
       if (f?.url) URL.revokeObjectURL(f.url);
       delete decodedBuffers.current[id];
       delete pannerNodes.current[id];
+      delete gainNodes.current[id];
       return prev.filter((t) => t.id !== id);
     });
   }, []);
@@ -1405,27 +1545,76 @@ export default function AudioCompareApp() {
 
   /* ── render ── */
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
+    <div className="min-h-screen bg-[#fdf6f0] text-[#3a1a00]">
       {/* ─ Transport bar ─ */}
-      <div className="sticky top-0 z-30 bg-white/90 backdrop-blur border-b shadow-sm">
-        <div className="mx-auto max-w-7xl px-4 py-3 flex items-center gap-3 flex-wrap">
-          <h1 className="text-lg font-bold tracking-tight mr-2">
-            Audio Compare
-          </h1>
-          <h4 className="text-sm font-medium text-slate-500">
-            by Hans Martin Sognefest Austestad
-          </h4>
+      <div className="sticky top-0 z-30 bg-gradient-to-r from-[#3a1500]/95 to-[#5a2a08]/95 backdrop-blur border-b border-[#7a3a10]/40 shadow-lg">
+        {/* Row 1: logo, title, main controls */}
+        <div className="mx-auto max-w-7xl px-4 pt-2.5 pb-1 flex items-center gap-3 flex-wrap">
+          <svg viewBox="0 0 64 64" className="w-9 h-9 shrink-0 -mr-1">
+            <defs>
+              <radialGradient id="gr" cx="35%" cy="30%" r="50%">
+                <stop offset="0%" stopColor="#ff9a7b" />
+                <stop offset="60%" stopColor="#e8453c" />
+                <stop offset="100%" stopColor="#b22a1a" />
+              </radialGradient>
+              <radialGradient id="go1" cx="35%" cy="30%" r="50%">
+                <stop offset="0%" stopColor="#ffcf5e" />
+                <stop offset="60%" stopColor="#f5a623" />
+                <stop offset="100%" stopColor="#c97b0a" />
+              </radialGradient>
+              <radialGradient id="go2" cx="35%" cy="30%" r="50%">
+                <stop offset="0%" stopColor="#ffe08a" />
+                <stop offset="60%" stopColor="#f0892d" />
+                <stop offset="100%" stopColor="#bf5e0a" />
+              </radialGradient>
+            </defs>
+            <circle
+              cx="32"
+              cy="18"
+              r="15"
+              fill="url(#go2)"
+              stroke="#4a1a00"
+              strokeWidth="2"
+            />
+            <ellipse cx="28" cy="13" rx="4" ry="3" fill="white" opacity="0.6" />
+            <circle
+              cx="19"
+              cy="42"
+              r="15"
+              fill="url(#gr)"
+              stroke="#4a1a00"
+              strokeWidth="2"
+            />
+            <ellipse cx="15" cy="37" rx="4" ry="3" fill="white" opacity="0.6" />
+            <circle
+              cx="45"
+              cy="42"
+              r="15"
+              fill="url(#go1)"
+              stroke="#4a1a00"
+              strokeWidth="2"
+            />
+            <ellipse cx="41" cy="37" rx="4" ry="3" fill="white" opacity="0.6" />
+          </svg>
+          <div className="mr-2">
+            <h1 className="text-lg font-bold tracking-tight leading-tight text-[#ffe0b2]">
+              Caviar Mixer
+            </h1>
+            <p className="text-[10px] font-medium text-[#c09060] leading-none">
+              mix and compare audio
+            </p>
+          </div>
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700"
+            className="inline-flex items-center gap-1.5 rounded-xl bg-[#f5a623] px-3 py-1.5 text-xs font-medium text-[#3a1500] hover:bg-[#f0892d]"
           >
             <Upload size={14} /> Add files
           </button>
-          <div className="h-6 w-px bg-slate-200" />
+          <div className="h-6 w-px bg-[#7a3a10]/40" />
           <button
             onClick={() => (isPlaying ? pauseAll() : playAll(0))}
             disabled={!tracks.length}
-            className="inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium hover:bg-slate-100 disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-[#7a3a10]/40 px-3 py-1.5 text-xs font-medium text-[#ffe0b2] hover:bg-[#5a2a08] disabled:opacity-40"
           >
             {isPlaying ? <Pause size={14} /> : <Play size={14} />}
             {isPlaying ? "Pause all" : "Play all"}
@@ -1433,23 +1622,62 @@ export default function AudioCompareApp() {
           <button
             onClick={() => seekTo(0)}
             disabled={!tracks.length}
-            className="p-1.5 rounded-lg hover:bg-slate-100 disabled:opacity-40"
+            className="p-1.5 rounded-lg text-[#c09060] hover:bg-[#5a2a08] disabled:opacity-40"
             title="To start"
           >
             <SkipBack size={14} />
           </button>
           <button
             onClick={() => setLoopRegion(!loopRegion)}
-            className={`p-1.5 rounded-lg ${loopRegion ? "bg-emerald-100 text-emerald-700" : "hover:bg-slate-100 text-slate-500"}`}
+            className={`p-1.5 rounded-lg ${loopRegion ? "bg-[#f5a623]/20 text-[#f5a623]" : "hover:bg-[#5a2a08] text-[#c09060]"}`}
             title="Loop region"
           >
             <Repeat size={14} />
           </button>
-          <div className="h-6 w-px bg-slate-200" />
+          {tracks.length >= 2 && (
+            <button
+              onClick={() => {
+                setAbMode(false);
+                setShowCrossfader(true);
+                setShowABFader(false);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#e8453c]/40 bg-[#e8453c]/15 px-3 py-1.5 text-xs font-medium text-[#ff9a7b] hover:bg-[#e8453c]/25"
+            >
+              <BarChart3 size={14} /> Geometric
+            </button>
+          )}
+          {tracks.length >= 2 && (
+            <button
+              onClick={() => {
+                setAbMode(true);
+                setShowABFader(true);
+                setShowCrossfader(false);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#f5a623]/40 bg-[#f5a623]/15 px-3 py-1.5 text-xs font-medium text-[#ffcf5e] hover:bg-[#f5a623]/25"
+            >
+              <Headphones size={14} /> A/B Fader
+            </button>
+          )}
+          {tracks.length >= 2 && (
+            <button
+              onClick={() => setGainMatch((p) => !p)}
+              className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium ${
+                gainMatch
+                  ? "border-[#f5a623]/50 bg-[#f5a623]/20 text-[#ffcf5e]"
+                  : "border-[#7a3a10]/40 hover:bg-[#5a2a08] text-[#c09060]"
+              }`}
+              title="Level match all tracks to equal loudness"
+            >
+              <Volume2 size={14} /> {gainMatch ? "Matched" : "Gain Match"}
+            </button>
+          )}
+        </div>
+        {/* Row 2: segment length + playhead */}
+        <div className="mx-auto max-w-7xl px-4 pb-2 flex items-center gap-4 flex-wrap">
           {/* segment length */}
-          <div className="flex items-center gap-2 text-[11px] text-slate-500">
-            <Lock size={12} className="text-emerald-600" />
-            <span>Segment length:</span>
+          <div className="flex items-center gap-2 text-[11px] text-[#c09060]">
+            <Lock size={12} className="text-[#f5a623]" />
+            <span>Segment:</span>
             <input
               type="range"
               min="0.1"
@@ -1457,21 +1685,23 @@ export default function AudioCompareApp() {
               step="0.01"
               value={segmentLength}
               onChange={(e) => setSegmentLength(Number(e.target.value))}
-              className="w-24"
+              className="w-28 accent-[#f5a623]"
               style={{ height: "4px" }}
             />
-            <span className="tabular-nums font-medium">
+            <span className="tabular-nums font-medium text-[#ffe0b2]">
               {fmt(segmentLength)}
             </span>
           </div>
-          <div className="h-6 w-px bg-slate-200" />
+          <div className="h-4 w-px bg-[#7a3a10]/40" />
           {/* playhead */}
-          <div className="flex items-center gap-1 text-[11px] text-slate-500">
-            <span className="font-medium text-red-500 tabular-nums">
+          <div className="flex items-center gap-1.5 text-[11px] text-[#c09060]">
+            <span className="font-medium text-[#e8453c] tabular-nums">
               {fmt(playhead)}
             </span>
-            <span className="text-slate-300">/</span>
-            <span className="tabular-nums">{fmt(segmentLength)}</span>
+            <span className="text-[#7a3a10]">/</span>
+            <span className="tabular-nums text-[#ffe0b2]">
+              {fmt(segmentLength)}
+            </span>
             <input
               type="range"
               min="0"
@@ -1479,7 +1709,7 @@ export default function AudioCompareApp() {
               step="0.01"
               value={playhead}
               onChange={(e) => seekTo(Number(e.target.value))}
-              className="w-24"
+              className="w-32 accent-[#e8453c]"
               style={{ height: "4px" }}
             />
           </div>
@@ -1497,7 +1727,7 @@ export default function AudioCompareApp() {
       <div className="mx-auto max-w-7xl p-4 space-y-3">
         {/* ─ Tracks ─ */}
         {tracks.length === 0 && (
-          <div className="rounded-2xl border border-dashed bg-white p-12 text-center text-sm text-slate-400">
+          <div className="rounded-2xl border border-dashed border-[#d4a87a] bg-white/80 p-12 text-center text-sm text-[#9a6a40]">
             No audio files loaded yet. Click "Add files" to get started.
           </div>
         )}
@@ -1533,7 +1763,7 @@ export default function AudioCompareApp() {
                   setDragId(track.id);
                   e.dataTransfer.effectAllowed = "move";
                 }}
-                className="pt-4 cursor-grab active:cursor-grabbing text-slate-300 hover:text-slate-500"
+                className="pt-4 cursor-grab active:cursor-grabbing text-[#d4a87a] hover:text-[#9a6a40]"
               >
                 <GripVertical size={16} />
               </div>
@@ -1547,8 +1777,6 @@ export default function AudioCompareApp() {
                   singlePlayhead={
                     singlePlayId === track.id ? singlePlayhead : null
                   }
-                  isA={Number(crossfadeA) === i}
-                  isB={Number(crossfadeB) === i}
                   isSolo={soloId === track.id}
                   onSeek={seekTo}
                   onSetSegStart={setSegStart}
@@ -1575,348 +1803,745 @@ export default function AudioCompareApp() {
           </div>
         ))}
 
-        {/* ─ Crossfader ─ */}
-        {tracks.length >= 2 && (
-          <div className="rounded-2xl border bg-white p-4 shadow-sm">
-            <div className="flex items-center gap-4 flex-wrap">
-              <h3 className="text-sm font-semibold">A/B Crossfader</h3>
-
-              <select
-                value={crossfadeA}
-                onChange={(e) => setCrossfadeA(Number(e.target.value))}
-                className="rounded-lg border px-2 py-1 text-xs"
-              >
-                {tracks.map((t, i) => (
-                  <option key={t.id} value={i}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-
-              <div className="flex items-center gap-2 flex-1 min-w-[200px]">
-                <span className="text-[10px] text-blue-600 font-semibold">
-                  A
-                </span>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={crossfadeValue}
-                  onChange={(e) => setCrossfadeValue(Number(e.target.value))}
-                  className="w-full h-1.5"
-                />
-                <span className="text-[10px] text-violet-600 font-semibold">
-                  B
-                </span>
+        {/* ─ Geometric Crossfader Modal ─ */}
+        {showCrossfader && tracks.length >= 2 && (
+          <div
+            className="fixed inset-x-0 top-[3.5rem] bottom-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowCrossfader(false);
+            }}
+          >
+            <div className="bg-[#fdf6f0] rounded-3xl shadow-2xl w-[96vw] max-w-[1100px] max-h-[calc(96vh-3.5rem)] overflow-auto p-6 relative">
+              {/* header */}
+              <div className="flex items-center justify-between mb-5">
+                <div>
+                  <h2 className="text-xl font-bold text-[#3a1a00]">
+                    Geometric Crossfader
+                  </h2>
+                  <p className="text-sm text-[#9a6a40] mt-0.5">
+                    Drag the point to mix between tracks
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowCrossfader(false)}
+                  className="p-2 rounded-xl hover:bg-[#f5e6d0] text-[#9a6a40]"
+                >
+                  <X size={20} />
+                </button>
               </div>
 
-              <select
-                value={crossfadeB}
-                onChange={(e) => setCrossfadeB(Number(e.target.value))}
-                className="rounded-lg border px-2 py-1 text-xs"
-              >
-                {tracks.map((t, i) => (
-                  <option key={t.id} value={i}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-        )}
-
-        {/* ─ Analysis summary ─ */}
-        {tracks.length > 0 && Object.keys(analyses).length > 0 && (
-          <div className="rounded-2xl border bg-white p-4 shadow-sm">
-            <h3 className="text-sm font-semibold mb-3">
-              Analysis — segment ({fmt(segmentLength)})
-            </h3>
-            <div
-              className="grid gap-2"
-              style={{
-                gridTemplateColumns: `repeat(${Math.min(tracks.length, 4)}, 1fr)`,
-              }}
-            >
-              {tracks.map((t, i) => {
-                const a = analyses[t.id];
-                if (!a) return null;
-                const c = TRACK_COLORS[i % TRACK_COLORS.length];
+              {/* ── playback progress bar ── */}
+              {(() => {
+                const maxDur = Math.max(
+                  ...tracks.map((t) => t.duration || 0),
+                  1,
+                );
+                const total = segmentLength > 0 ? segmentLength : maxDur;
+                const pct =
+                  total > 0 ? Math.min((playhead / total) * 100, 100) : 0;
+                const seekFromPointer = (ev, bar) => {
+                  const rect = bar.getBoundingClientRect();
+                  const x = clamp((ev.clientX - rect.left) / rect.width, 0, 1);
+                  seekTo(x * total);
+                };
                 return (
-                  <div
-                    key={t.id}
-                    className="rounded-xl border p-3 text-xs space-y-1"
-                  >
-                    <div className="flex items-center gap-1.5 font-medium">
+                  <div className="mb-5">
+                    <div className="flex items-center justify-between text-xs text-[#9a6a40] mb-1">
+                      <span>{playhead.toFixed(1)}s</span>
+                      <span>{isPlaying ? "Playing" : "Stopped"}</span>
+                      <span>{total.toFixed(1)}s</span>
+                    </div>
+                    <div
+                      className="h-3 rounded-full bg-[#e8d5c0] overflow-hidden cursor-pointer relative select-none"
+                      onPointerDown={(e) => {
+                        const bar = e.currentTarget;
+                        bar.setPointerCapture(e.pointerId);
+                        seekFromPointer(e, bar);
+                        const move = (ev) => seekFromPointer(ev, bar);
+                        const up = () => {
+                          bar.removeEventListener("pointermove", move);
+                          bar.removeEventListener("pointerup", up);
+                        };
+                        bar.addEventListener("pointermove", move);
+                        bar.addEventListener("pointerup", up);
+                      }}
+                    >
                       <div
-                        className="w-2.5 h-2.5 rounded-full"
-                        style={{ background: c }}
+                        className="h-full rounded-full bg-gradient-to-r from-[#e8453c] to-[#f5a623] pointer-events-none"
+                        style={{ width: `${pct}%` }}
                       />
-                      <span className="truncate">{t.name}</span>
-                    </div>
-                    <div className="flex justify-between text-slate-500">
-                      <span>RMS</span>
-                      <span className="font-mono">{dbStr(a.rms)}</span>
-                    </div>
-                    <div className="flex justify-between text-slate-500">
-                      <span>Peak</span>
-                      <span className="font-mono">{dbStr(a.peak)}</span>
-                    </div>
-                    <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                      {/* drag handle */}
                       <div
-                        className="h-full rounded-full"
-                        style={{
-                          width: `${Math.min(a.rms * 200, 100)}%`,
-                          background: c,
-                        }}
+                        className="absolute top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-white border-2 border-[#e8453c] shadow pointer-events-none"
+                        style={{ left: `calc(${pct}% - 8px)` }}
                       />
                     </div>
                   </div>
                 );
-              })}
-            </div>
-          </div>
-        )}
-        {/* ─ Comparison Analysis ─ */}
-        {tracks.length >= 2 && (
-          <div className="rounded-2xl border bg-white p-4 shadow-sm">
-            <div className="flex items-center gap-3 mb-3">
-              <BarChart3 size={16} className="text-indigo-500" />
-              <h3 className="text-sm font-semibold">Similarity Analysis</h3>
-              <button
-                onClick={() => {
-                  setComparing(true);
-                  const results = {};
-                  tracks.forEach((t) => {
-                    const buf = decodedBuffers.current[t.id];
-                    if (!buf) return;
-                    const ss = t.segStart || 0;
-                    const se = Math.min(ss + segmentLength, t.duration);
-                    results[t.id] = analyzeTrackFull(buf, ss, se);
-                  });
-                  setFullAnalyses(results);
-                  setComparing(false);
-                }}
-                disabled={comparing}
-                className="inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium hover:bg-slate-100 disabled:opacity-40"
-              >
-                {comparing ? "Analyzing..." : "Run analysis"}
-              </button>
-              {Object.keys(fullAnalyses).length > 0 && (
-                <span className="text-[10px] text-slate-400">
-                  Segment: {fmt(segmentLength)}
-                </span>
-              )}
-            </div>
+              })()}
 
-            {Object.keys(fullAnalyses).length > 0 && (
-              <>
-                {/* per-track stats */}
-                <div
-                  className="grid gap-2 mb-4"
-                  style={{
-                    gridTemplateColumns: `repeat(${Math.min(tracks.length, 4)}, 1fr)`,
+              <div className="flex gap-6 flex-wrap items-start justify-center">
+                {/* polygon canvas */}
+                <svg
+                  width="540"
+                  height="540"
+                  viewBox="-1.5 -1.5 3 3"
+                  className="border border-[#d4a87a]/40 rounded-2xl bg-gradient-to-br from-[#fdf6f0] to-[#f5e6d0] cursor-crosshair select-none shrink-0"
+                  onPointerDown={(e) => {
+                    const svg = e.currentTarget;
+                    const pt = svg.createSVGPoint();
+                    const move = (ev) => {
+                      pt.x = ev.clientX;
+                      pt.y = ev.clientY;
+                      const svgP = pt.matrixTransform(
+                        svg.getScreenCTM().inverse(),
+                      );
+                      const r = tracks.length === 2 ? 1.05 : 1.2;
+                      const x = clamp(svgP.x, -r, r);
+                      const y = clamp(svgP.y, -r, r);
+                      setMixPos({ x, y });
+                    };
+                    move(e);
+                    const up = () => {
+                      window.removeEventListener("pointermove", move);
+                      window.removeEventListener("pointerup", up);
+                    };
+                    window.addEventListener("pointermove", move);
+                    window.addEventListener("pointerup", up);
                   }}
                 >
-                  {tracks.map((t, i) => {
-                    const fa = fullAnalyses[t.id];
-                    if (!fa) return null;
+                  <defs>
+                    {/* radial glows for each track color */}
+                    {tracks.map((_, i) => {
+                      const c = TRACK_COLORS[i % TRACK_COLORS.length];
+                      return (
+                        <radialGradient
+                          key={`rg-${i}`}
+                          id={`vtxGlow-${i}`}
+                          cx="50%"
+                          cy="50%"
+                          r="50%"
+                        >
+                          <stop offset="0%" stopColor={c} stopOpacity="0.7" />
+                          <stop offset="60%" stopColor={c} stopOpacity="0.2" />
+                          <stop offset="100%" stopColor={c} stopOpacity="0" />
+                        </radialGradient>
+                      );
+                    })}
+                  </defs>
+                  {/* subtle grid circles */}
+                  {[0.33, 0.66, 1].map((r) => (
+                    <circle
+                      key={r}
+                      cx="0"
+                      cy="0"
+                      r={r}
+                      fill="none"
+                      stroke="#d4a87a"
+                      strokeWidth="0.01"
+                      strokeDasharray="0.04 0.04"
+                    />
+                  ))}
+                  {/* polygon fill */}
+                  {polyVertices.length >= 3 && (
+                    <polygon
+                      points={polyVertices
+                        .map((v) => `${v.x},${v.y}`)
+                        .join(" ")}
+                      fill="#f5e6d0"
+                      stroke="#d4a87a"
+                      strokeWidth="0.03"
+                    />
+                  )}
+                  {/* colored wedge fills showing weight distribution */}
+                  {polyVertices.length >= 3 &&
+                    polyVertices.map((v, i) => {
+                      const w = mixWeights[i] ?? 0;
+                      if (w <= 0.01) return null;
+                      const c = TRACK_COLORS[i % TRACK_COLORS.length];
+                      const n = polyVertices.length;
+                      const prev = polyVertices[(i - 1 + n) % n];
+                      const next = polyVertices[(i + 1) % n];
+                      const midPx = (v.x + prev.x) / 2,
+                        midPy = (v.y + prev.y) / 2;
+                      const midNx = (v.x + next.x) / 2,
+                        midNy = (v.y + next.y) / 2;
+                      return (
+                        <polygon
+                          key={`wedge-${i}`}
+                          points={`0,0 ${midPx},${midPy} ${v.x},${v.y} ${midNx},${midNy}`}
+                          fill={c}
+                          opacity={w * 0.35}
+                        />
+                      );
+                    })}
+                  {/* line for 2 tracks */}
+                  {polyVertices.length === 2 && (
+                    <>
+                      <line
+                        x1={polyVertices[0].x}
+                        y1={polyVertices[0].y}
+                        x2={polyVertices[1].x}
+                        y2={polyVertices[1].y}
+                        stroke="#d4a87a"
+                        strokeWidth="0.03"
+                      />
+                      {/* colored halves for 2-track mode */}
+                      {polyVertices.map((v, i) => {
+                        const w = mixWeights[i] ?? 0;
+                        if (w <= 0.01) return null;
+                        const c = TRACK_COLORS[i % TRACK_COLORS.length];
+                        return (
+                          <rect
+                            key={`half-${i}`}
+                            x={i === 0 ? -1.5 : 0}
+                            y={-1.5}
+                            width={1.5}
+                            height={3}
+                            fill={c}
+                            opacity={w * 0.2}
+                          />
+                        );
+                      })}
+                    </>
+                  )}
+                  {/* glow halos at vertices proportional to weight */}
+                  {polyVertices.map((v, i) => {
+                    const w = mixWeights[i] ?? 0;
+                    if (w <= 0.02 || tracks[i]?.muted) return null;
+                    return (
+                      <circle
+                        key={`glow-${i}`}
+                        cx={v.x}
+                        cy={v.y}
+                        r={0.15 + w * 0.35}
+                        fill={`url(#vtxGlow-${i})`}
+                      />
+                    );
+                  })}
+                  {/* thick weight beams from cursor to each active vertex */}
+                  {polyVertices.map((v, i) => {
+                    const w = mixWeights[i] ?? 0;
+                    if (w <= 0) return null;
                     const c = TRACK_COLORS[i % TRACK_COLORS.length];
+                    return (
+                      <line
+                        key={`wl-${i}`}
+                        x1={mixPos.x}
+                        y1={mixPos.y}
+                        x2={v.x}
+                        y2={v.y}
+                        stroke={c}
+                        strokeWidth={0.02 + w * 0.14}
+                        opacity={0.4 + w * 0.6}
+                        strokeLinecap="round"
+                      />
+                    );
+                  })}
+                  {/* lines from center to vertices */}
+                  {polyVertices.length >= 3 &&
+                    polyVertices.map((v, i) => (
+                      <line
+                        key={i}
+                        x1="0"
+                        y1="0"
+                        x2={v.x}
+                        y2={v.y}
+                        stroke="#d4a87a"
+                        strokeWidth="0.015"
+                      />
+                    ))}
+                  {/* vertex dots + labels */}
+                  {polyVertices.map((v, i) => {
+                    const c = TRACK_COLORS[i % TRACK_COLORS.length];
+                    const muted = tracks[i]?.muted;
+                    const w = mixWeights[i] ?? 0;
+                    const n = tracks.length;
+                    const labelR = n === 2 ? 1.28 : 1.32;
+                    const angle =
+                      n === 2
+                        ? i === 0
+                          ? Math.PI
+                          : 0
+                        : -Math.PI / 2 + (2 * Math.PI * i) / n;
+                    const lx = Math.cos(angle) * labelR;
+                    const ly = Math.sin(angle) * labelR;
+                    const dotR = 0.1 + w * 0.1;
+                    return (
+                      <g key={i} opacity={muted ? 0.3 : 1}>
+                        {/* outer pulse ring */}
+                        {!muted && w > 0.05 && (
+                          <circle
+                            cx={v.x}
+                            cy={v.y}
+                            r={dotR + 0.04 + w * 0.06}
+                            fill="none"
+                            stroke={c}
+                            strokeWidth="0.02"
+                            opacity={w * 0.6}
+                          />
+                        )}
+                        <circle
+                          cx={v.x}
+                          cy={v.y}
+                          r={dotR}
+                          fill={muted ? "#94a3b8" : c}
+                          stroke="white"
+                          strokeWidth="0.03"
+                        />
+                        {muted && (
+                          <line
+                            x1={v.x - 0.08}
+                            y1={v.y - 0.08}
+                            x2={v.x + 0.08}
+                            y2={v.y + 0.08}
+                            stroke="#ef4444"
+                            strokeWidth="0.025"
+                          />
+                        )}
+                        <text
+                          x={lx}
+                          y={ly}
+                          textAnchor="middle"
+                          dominantBaseline="central"
+                          fontSize="0.17"
+                          fill={muted ? "#94a3b8" : c}
+                          fontWeight="700"
+                        >
+                          {i + 1}
+                        </text>
+                        {!muted && w > 0.01 && (
+                          <text
+                            x={lx}
+                            y={ly + (ly > 0 ? 0.13 : -0.13)}
+                            textAnchor="middle"
+                            dominantBaseline="central"
+                            fontSize="0.10"
+                            fill={c}
+                            fontFamily="monospace"
+                            fontWeight="700"
+                          >
+                            {(w * 100).toFixed(0)}%
+                          </text>
+                        )}
+                      </g>
+                    );
+                  })}
+                  {/* center dot */}
+                  <circle cx="0" cy="0" r="0.04" fill="#d4a87a" />
+                  {/* mix position indicator */}
+                  <circle
+                    cx={mixPos.x}
+                    cy={mixPos.y}
+                    r="0.18"
+                    fill="#fdf6f0"
+                    stroke="#3a1a00"
+                    strokeWidth="0.05"
+                    style={{
+                      filter: "drop-shadow(0 0.03px 0.08px rgba(0,0,0,0.35))",
+                    }}
+                  />
+                  <circle cx={mixPos.x} cy={mixPos.y} r="0.08" fill="#3a1a00" />
+                </svg>
+
+                {/* track list with controls */}
+                <div className="flex-1 min-w-[280px] max-h-[540px] overflow-y-auto space-y-0.5">
+                  {tracks.map((t, i) => {
+                    const w = mixWeights[i] ?? 0;
+                    const c = TRACK_COLORS[i % TRACK_COLORS.length];
+                    const muted = t.muted;
                     return (
                       <div
                         key={t.id}
-                        className="rounded-xl border p-3 text-xs space-y-1.5"
+                        className={`relative rounded-xl border overflow-hidden ${muted ? "opacity-50 border-[#d4a87a]/40" : "border-[#d4a87a]/40"}`}
+                        style={{
+                          borderLeftWidth: "4px",
+                          borderLeftColor: muted ? "#94a3b8" : c,
+                        }}
                       >
-                        <div className="flex items-center gap-1.5 font-medium">
+                        {/* waveform background */}
+                        <MiniWave
+                          id={t.id}
+                          peaks={t.peaks}
+                          color={c}
+                          muted={muted}
+                          progress={t.duration ? playhead / t.duration : 0}
+                        />
+                        {/* mix weight background fill */}
+                        <div
+                          className="absolute inset-y-0 left-0 transition-all duration-150 pointer-events-none rounded-r-xl"
+                          style={{
+                            width: `${(w * 100).toFixed(0)}%`,
+                            background: muted
+                              ? "#f5e6d0"
+                              : `linear-gradient(90deg, ${c}50 0%, ${c}30 50%, ${c}10 100%)`,
+                          }}
+                        />
+                        {/* weight percentage bar at bottom */}
+                        {!muted && w > 0.01 && (
                           <div
-                            className="w-2.5 h-2.5 rounded-full"
-                            style={{ background: c }}
+                            className="absolute bottom-0 left-0 h-1 transition-all duration-150 pointer-events-none"
+                            style={{
+                              width: `${(w * 100).toFixed(0)}%`,
+                              background: c,
+                              opacity: 0.7,
+                            }}
                           />
-                          <span className="truncate">{t.name}</span>
-                        </div>
-                        <div className="flex justify-between text-slate-500">
-                          <span>Tempo</span>
-                          <span className="font-mono">
-                            {fa.bpm ? `${fa.bpm} BPM` : "—"}
-                          </span>
-                        </div>
-                        <div className="flex justify-between text-slate-500">
-                          <span>Brightness</span>
-                          <span className="font-mono">
-                            {fa.centroid > 0
-                              ? `${Math.round(fa.centroid)} Hz`
-                              : "—"}
-                          </span>
-                        </div>
-                        <div className="flex justify-between text-slate-500">
-                          <span>Bandwidth</span>
-                          <span className="font-mono">
-                            {fa.bandwidth > 0
-                              ? `${Math.round(fa.bandwidth)} Hz`
-                              : "—"}
-                          </span>
-                        </div>
-                        <div className="flex justify-between text-slate-500">
-                          <span>Crest factor</span>
-                          <span className="font-mono">
-                            {fa.dynRange > 0
-                              ? `${fa.dynRange.toFixed(1)} (${(20 * Math.log10(fa.dynRange)).toFixed(1)} dB)`
-                              : "—"}
-                          </span>
+                        )}
+                        <div className="relative px-2.5 py-1.5 space-y-1">
+                          {/* row 1: number + name + reorder + mute */}
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="text-sm font-extrabold rounded-lg px-2 py-0.5 shrink-0 min-w-[1.75rem] text-center"
+                              style={{
+                                background: muted ? "#e8d5c0" : `${c}22`,
+                                color: muted ? "#94a3b8" : c,
+                              }}
+                            >
+                              {i + 1}
+                            </span>
+                            <span
+                              className={`text-sm flex-1 truncate ${muted ? "line-through text-[#9a6a40]" : "text-[#3a1a00] font-medium"}`}
+                              title={t.name}
+                            >
+                              {t.name}
+                            </span>
+                            <span
+                              className={`font-mono text-xs shrink-0 ${muted ? "text-[#b89070]" : "text-[#5a3520]"}`}
+                            >
+                              {muted ? "MUTE" : `${(w * 100).toFixed(0)}%`}
+                            </span>
+                            {/* reorder buttons */}
+                            <button
+                              onClick={() => {
+                                if (i === 0) return;
+                                setTracks((prev) => {
+                                  const arr = [...prev];
+                                  [arr[i - 1], arr[i]] = [arr[i], arr[i - 1]];
+                                  return arr;
+                                });
+                              }}
+                              disabled={i === 0}
+                              className="p-0.5 rounded hover:bg-[#f5e6d0] disabled:opacity-20 text-[#9a6a40]"
+                              title="Move up"
+                            >
+                              <ChevronUp size={14} />
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (i === tracks.length - 1) return;
+                                setTracks((prev) => {
+                                  const arr = [...prev];
+                                  [arr[i], arr[i + 1]] = [arr[i + 1], arr[i]];
+                                  return arr;
+                                });
+                              }}
+                              disabled={i === tracks.length - 1}
+                              className="p-0.5 rounded hover:bg-[#f5e6d0] disabled:opacity-20 text-[#9a6a40]"
+                              title="Move down"
+                            >
+                              <ChevronDown size={14} />
+                            </button>
+                            <button
+                              onClick={() => toggleMute(t.id)}
+                              className={`p-1 rounded-lg ${muted ? "bg-red-50 text-red-500" : "hover:bg-[#f5e6d0] text-[#9a6a40]"}`}
+                            >
+                              {muted ? (
+                                <VolumeX size={14} />
+                              ) : (
+                                <Volume2 size={14} />
+                              )}
+                            </button>
+                          </div>
+                          {/* row 2: volume + pan sliders */}
+                          <div className="flex items-center gap-3 text-xs text-[#9a6a40]">
+                            <Volume2
+                              size={12}
+                              className="shrink-0 text-[#d4a87a]"
+                            />
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.01"
+                              value={t.volume}
+                              onChange={(e) =>
+                                setVolume(t.id, Number(e.target.value))
+                              }
+                              className="flex-1"
+                              style={{ height: "4px" }}
+                            />
+                            <span className="w-8 text-right font-mono text-[10px] text-[#9a6a40]">
+                              {Math.round(t.volume * 100)}
+                            </span>
+                            <span className="text-[10px] text-[#d4a87a] ml-2">
+                              L
+                            </span>
+                            <input
+                              type="range"
+                              min="-1"
+                              max="1"
+                              step="0.01"
+                              value={t.pan || 0}
+                              onChange={(e) =>
+                                setPan(t.id, Number(e.target.value))
+                              }
+                              className="w-20"
+                              style={{ height: "4px" }}
+                            />
+                            <span className="text-[10px] text-[#d4a87a]">
+                              R
+                            </span>
+                          </div>
                         </div>
                       </div>
                     );
                   })}
+                  <div className="pt-3 flex items-center justify-between">
+                    <button
+                      onClick={() => setMixPos({ x: 0, y: 0 })}
+                      className="rounded-lg border border-[#d4a87a]/40 px-4 py-1.5 text-xs font-medium text-[#3a1a00] hover:bg-[#f5e6d0] transition-colors"
+                    >
+                      Reset to center
+                    </button>
+                    <button
+                      onClick={() => {
+                        setAbMode(true);
+                        setShowCrossfader(false);
+                        setShowABFader(true);
+                      }}
+                      className="inline-flex items-center gap-1.5 text-xs text-[#f5a623] hover:text-[#e8453c] font-medium"
+                    >
+                      <Headphones size={14} /> Switch to A/B Fader
+                    </button>
+                  </div>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
 
-                {/* pairwise comparison table */}
-                <h4 className="text-xs font-semibold text-slate-600 mb-2">
-                  Pairwise Comparison
-                </h4>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-[11px] border-collapse">
-                    <thead>
-                      <tr className="text-left text-slate-400">
-                        <th className="p-1.5">Track A vs B</th>
-                        <th className="p-1.5 text-center">Spectral</th>
-                        <th className="p-1.5 text-center">Waveform</th>
-                        <th className="p-1.5 text-center">Tempo</th>
-                        <th className="p-1.5 text-center">Brightness</th>
-                        <th className="p-1.5 text-center">Overall</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {tracks.flatMap((tA, iA) =>
-                        tracks.slice(iA + 1).map((tB, jB) => {
-                          const iB = iA + 1 + jB;
-                          const faA = fullAnalyses[tA.id],
-                            faB = fullAnalyses[tB.id];
-                          if (!faA || !faB) return null;
-                          const specSim =
-                            faA.spectrum && faB.spectrum
-                              ? spectralSimilarity(faA.spectrum, faB.spectrum)
-                              : null;
-                          const bufA = decodedBuffers.current[tA.id],
-                            bufB = decodedBuffers.current[tB.id];
-                          const ssA = tA.segStart || 0,
-                            ssB = tB.segStart || 0;
-                          const seA = Math.min(
-                              ssA + segmentLength,
-                              tA.duration,
-                            ),
-                            seB = Math.min(ssB + segmentLength, tB.duration);
-                          const waveSim =
-                            bufA && bufB
-                              ? crossCorrelation(bufA, bufB, ssA, seA, ssB, seB)
-                              : null;
-                          const bpmA = faA.bpm,
-                            bpmB = faB.bpm;
-                          const tempoSim =
-                            bpmA && bpmB
-                              ? 1 - Math.abs(bpmA - bpmB) / Math.max(bpmA, bpmB)
-                              : null;
-                          const maxC = Math.max(faA.centroid, faB.centroid);
-                          const brightSim =
-                            maxC > 0
-                              ? 1 - Math.abs(faA.centroid - faB.centroid) / maxC
-                              : null;
-                          const parts = [
-                            specSim,
-                            waveSim,
-                            tempoSim,
-                            brightSim,
-                          ].filter((v) => v != null);
-                          const overall =
-                            parts.length > 0
-                              ? parts.reduce((a, b) => a + b, 0) / parts.length
-                              : null;
-                          const simColor = (v) =>
-                            v == null
-                              ? ""
-                              : v > 0.85
-                                ? "text-emerald-600 font-bold"
-                                : v > 0.6
-                                  ? "text-amber-600"
-                                  : "text-red-500";
-                          return (
-                            <tr
-                              key={`${tA.id}-${tB.id}`}
-                              className="border-t border-slate-100 hover:bg-slate-50"
-                            >
-                              <td className="p-1.5">
-                                <span
-                                  className="inline-block w-2 h-2 rounded-full mr-1"
-                                  style={{
-                                    background:
-                                      TRACK_COLORS[iA % TRACK_COLORS.length],
-                                  }}
-                                />
-                                <span className="font-medium">{tA.name}</span>
-                                <span className="text-slate-300 mx-1">vs</span>
-                                <span
-                                  className="inline-block w-2 h-2 rounded-full mr-1"
-                                  style={{
-                                    background:
-                                      TRACK_COLORS[iB % TRACK_COLORS.length],
-                                  }}
-                                />
-                                <span className="font-medium">{tB.name}</span>
-                              </td>
-                              <td
-                                className={`p-1.5 text-center font-mono ${simColor(specSim)}`}
-                              >
-                                {specSim != null ? pctStr(specSim) : "—"}
-                              </td>
-                              <td
-                                className={`p-1.5 text-center font-mono ${simColor(waveSim != null ? Math.abs(waveSim) : null)}`}
-                              >
-                                {waveSim != null
-                                  ? pctStr(Math.abs(waveSim))
-                                  : "—"}
-                              </td>
-                              <td
-                                className={`p-1.5 text-center font-mono ${simColor(tempoSim)}`}
-                              >
-                                {tempoSim != null ? pctStr(tempoSim) : "—"}
-                              </td>
-                              <td
-                                className={`p-1.5 text-center font-mono ${simColor(brightSim)}`}
-                              >
-                                {brightSim != null ? pctStr(brightSim) : "—"}
-                              </td>
-                              <td
-                                className={`p-1.5 text-center font-mono ${simColor(overall)}`}
-                              >
-                                {overall != null ? pctStr(overall) : "—"}
-                              </td>
-                            </tr>
-                          );
-                        }),
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="mt-2 text-[10px] text-slate-400 space-y-0.5">
-                  <p>
-                    <strong>Spectral:</strong> Frequency profile similarity
-                    (cosine similarity). <strong>Waveform:</strong>{" "}
-                    Cross-correlation of audio. <strong>Tempo:</strong> BPM
-                    similarity. <strong>Brightness:</strong> Spectral centroid
-                    similarity.
-                  </p>
-                  <p className="flex items-center gap-2">
-                    <span className="text-emerald-600 font-bold">
-                      &gt;85% = high
-                    </span>{" "}
-                    <span className="text-amber-600">&gt;60% = medium</span>{" "}
-                    <span className="text-red-500">&lt;60% = low</span>
+        {/* Analysis sections removed – to be reimplemented */}
+
+        {/* ─ A/B Crossfader Modal ─ */}
+        {showABFader && tracks.length >= 2 && (
+          <div
+            className="fixed inset-x-0 top-[3.5rem] bottom-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowABFader(false);
+            }}
+          >
+            <div className="bg-[#fdf6f0] rounded-3xl shadow-2xl w-[96vw] max-w-[700px] max-h-[calc(96vh-3.5rem)] overflow-auto p-6 relative">
+              {/* header */}
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h2 className="text-xl font-bold text-[#3a1a00]">
+                    A/B Crossfader
+                  </h2>
+                  <p className="text-sm text-[#9a6a40] mt-0.5">
+                    Classic two-track crossfade
                   </p>
                 </div>
-              </>
-            )}
+                <button
+                  onClick={() => setShowABFader(false)}
+                  className="p-2 rounded-xl hover:bg-[#f5e6d0] text-[#9a6a40]"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              {/* track selectors */}
+              <div className="flex items-center gap-4 mb-6">
+                <div className="flex-1">
+                  <label className="text-xs font-medium text-[#9a6a40] mb-1 block">
+                    Track A
+                  </label>
+                  <select
+                    value={abTrackA}
+                    onChange={(e) => setAbTrackA(Number(e.target.value))}
+                    className="w-full rounded-xl border border-[#d4a87a]/40 bg-white px-3 py-2 text-sm font-medium text-[#3a1a00]"
+                    style={{
+                      borderLeftWidth: "4px",
+                      borderLeftColor:
+                        TRACK_COLORS[abTrackA % TRACK_COLORS.length],
+                    }}
+                  >
+                    {tracks.map((t, i) => (
+                      <option key={t.id} value={i}>
+                        {i + 1}. {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <span className="text-[#d4a87a] font-bold text-lg mt-4">
+                  vs
+                </span>
+                <div className="flex-1">
+                  <label className="text-xs font-medium text-[#9a6a40] mb-1 block">
+                    Track B
+                  </label>
+                  <select
+                    value={abTrackB}
+                    onChange={(e) => setAbTrackB(Number(e.target.value))}
+                    className="w-full rounded-xl border border-[#d4a87a]/40 bg-white px-3 py-2 text-sm font-medium text-[#3a1a00]"
+                    style={{
+                      borderLeftWidth: "4px",
+                      borderLeftColor:
+                        TRACK_COLORS[abTrackB % TRACK_COLORS.length],
+                    }}
+                  >
+                    {tracks.map((t, i) => (
+                      <option key={t.id} value={i}>
+                        {i + 1}. {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* crossfader slider */}
+              <div className="rounded-2xl border border-[#d4a87a]/40 bg-gradient-to-br from-[#fdf6f0] to-[#f5e6d0] p-5 mb-4">
+                <div className="flex items-end justify-between mb-3">
+                  <div className="text-center">
+                    <div
+                      className="text-2xl font-bold"
+                      style={{
+                        color: TRACK_COLORS[abTrackA % TRACK_COLORS.length],
+                      }}
+                    >
+                      {((1 - abValue) * 100).toFixed(0)}%
+                    </div>
+                    <div className="text-xs text-[#9a6a40] font-medium truncate max-w-[180px]">
+                      {tracks[abTrackA]?.name ?? "A"}
+                    </div>
+                  </div>
+                  <div className="text-center">
+                    <div
+                      className="text-2xl font-bold"
+                      style={{
+                        color: TRACK_COLORS[abTrackB % TRACK_COLORS.length],
+                      }}
+                    >
+                      {(abValue * 100).toFixed(0)}%
+                    </div>
+                    <div className="text-xs text-[#9a6a40] font-medium truncate max-w-[180px]">
+                      {tracks[abTrackB]?.name ?? "B"}
+                    </div>
+                  </div>
+                </div>
+                {/* visual bar */}
+                <div className="h-6 rounded-full overflow-hidden flex mb-3">
+                  <div
+                    className="h-full transition-all duration-75"
+                    style={{
+                      width: `${((1 - abValue) * 100).toFixed(0)}%`,
+                      background: TRACK_COLORS[abTrackA % TRACK_COLORS.length],
+                    }}
+                  />
+                  <div
+                    className="h-full transition-all duration-75"
+                    style={{
+                      width: `${(abValue * 100).toFixed(0)}%`,
+                      background: TRACK_COLORS[abTrackB % TRACK_COLORS.length],
+                    }}
+                  />
+                </div>
+                {/* slider */}
+                <div className="flex items-center gap-3">
+                  <span
+                    className="text-xs font-bold"
+                    style={{
+                      color: TRACK_COLORS[abTrackA % TRACK_COLORS.length],
+                    }}
+                  >
+                    A
+                  </span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.005"
+                    value={abValue}
+                    onChange={(e) => setAbValue(Number(e.target.value))}
+                    className="flex-1 h-3 cursor-pointer"
+                  />
+                  <span
+                    className="text-xs font-bold"
+                    style={{
+                      color: TRACK_COLORS[abTrackB % TRACK_COLORS.length],
+                    }}
+                  >
+                    B
+                  </span>
+                </div>
+                <div className="flex justify-center gap-2 mt-4">
+                  <button
+                    onClick={() => setAbValue(0)}
+                    className="rounded-lg border border-[#d4a87a]/40 px-3 py-1 text-xs font-medium text-[#3a1a00] hover:bg-white transition-colors"
+                  >
+                    All A
+                  </button>
+                  <button
+                    onClick={() => setAbValue(0.5)}
+                    className="rounded-lg border border-[#d4a87a]/40 px-3 py-1 text-xs font-medium text-[#3a1a00] hover:bg-white transition-colors"
+                  >
+                    50/50
+                  </button>
+                  <button
+                    onClick={() => setAbValue(1)}
+                    className="rounded-lg border border-[#d4a87a]/40 px-3 py-1 text-xs font-medium text-[#3a1a00] hover:bg-white transition-colors"
+                  >
+                    All B
+                  </button>
+                </div>
+              </div>
+
+              {/* switch to geometric */}
+              <div className="flex items-center justify-between pt-2">
+                <button
+                  onClick={() => {
+                    setAbMode(false);
+                    setShowABFader(false);
+                    setShowCrossfader(true);
+                  }}
+                  className="inline-flex items-center gap-1.5 text-xs text-[#e8453c] hover:text-[#b22a1a] font-medium"
+                >
+                  <BarChart3 size={14} /> Switch to Geometric Crossfader
+                </button>
+                <button
+                  onClick={() => {
+                    setAbMode(false);
+                    setShowABFader(false);
+                  }}
+                  className="text-xs text-[#9a6a40] hover:text-[#3a1a00]"
+                >
+                  Disable A/B mode
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>
+      <footer className="border-t border-[#d4a87a]/30 bg-[#3a1500]/90 backdrop-blur text-center py-4 text-xs text-[#c09060]">
+        Built by{" "}
+        <a
+          href="https://github.com/banjohans"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-medium text-[#ffe0b2] hover:text-white"
+        >
+          Hans Martin Sognefest Austestad
+        </a>{" "}
+        ·{" "}
+        <a
+          href="https://github.com/banjohans"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hover:text-[#ffe0b2]"
+        >
+          github.com/banjohans
+        </a>
+      </footer>
     </div>
   );
 }
