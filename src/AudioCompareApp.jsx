@@ -1060,35 +1060,33 @@ const SpectrogramOverlay = memo(function SpectrogramOverlay({ bufA, bufB, fromA,
           {fade < 0.3 ? "← Track A" : fade > 0.7 ? "Track B →" : "Overlap"}
         </div>
       </div>
-      {/* Play controls — directly below spectrogram when selection exists */}
-      {normRect && (
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => playing ? stopPlayback() : startPlayback()}
-            className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1 rounded-full bg-[#f5a623]/20 text-[#f5a623] hover:bg-[#f5a623]/40 transition-colors"
-          >
-            {playing ? <Pause size={13} /> : <Play size={13} />}
-            {playing ? "Stop" : "Play selection"}
-          </button>
-          {playing && (
-            <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
-              <div className="h-full rounded-full bg-[#f5a623] transition-[width] duration-75" style={{ width: `${playProgress * 100}%` }} />
-            </div>
-          )}
-          {regionMetrics && (
-            <span className="text-[9px] text-[#9a6a40] ml-auto">
-              {regionMetrics.duration.toFixed(1)}s · {regionMetrics.loHz.toFixed(0)}–{regionMetrics.hiHz.toFixed(0)} Hz
-            </span>
-          )}
-          <button
-            onClick={() => { setSelRect(null); setRegionMetrics(null); stopPlayback(); }}
-            className="text-[9px] text-[#9a6a40] hover:text-[#f5a623]"
-            title="Clear selection"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      )}
+      {/* Play controls — always reserve space to prevent layout shift */}
+      <div className={`flex items-center gap-2 min-h-[28px] ${normRect ? "visible" : "invisible"}`}>
+        <button
+          onClick={() => playing ? stopPlayback() : startPlayback()}
+          className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1 rounded-full bg-[#f5a623]/20 text-[#f5a623] hover:bg-[#f5a623]/40 transition-colors"
+        >
+          {playing ? <Pause size={13} /> : <Play size={13} />}
+          {playing ? "Stop" : "Play selection"}
+        </button>
+        {playing && (
+          <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
+            <div className="h-full rounded-full bg-[#f5a623] transition-[width] duration-75" style={{ width: `${playProgress * 100}%` }} />
+          </div>
+        )}
+        {regionMetrics && (
+          <span className="text-[9px] text-[#9a6a40] ml-auto">
+            {regionMetrics.duration.toFixed(1)}s · {regionMetrics.loHz.toFixed(0)}–{regionMetrics.hiHz.toFixed(0)} Hz
+          </span>
+        )}
+        <button
+          onClick={() => { setSelRect(null); setRegionMetrics(null); stopPlayback(); }}
+          className="text-[9px] text-[#9a6a40] hover:text-[#f5a623]"
+          title="Clear selection"
+        >
+          <X size={14} />
+        </button>
+      </div>
       {/* Crossfade slider — also controls audio A/B */}
       <div className="flex items-center gap-3">
         <span className="text-[10px] font-semibold text-[#c97a30] w-8 text-right">A</span>
@@ -1108,10 +1106,15 @@ const SpectrogramOverlay = memo(function SpectrogramOverlay({ bufA, bufB, fromA,
         <span className="flex items-center gap-1"><span className="inline-block w-3 h-2 rounded-sm" style={{background: "linear-gradient(to right, #0a0500, #f5a623)"}} /> Track A</span>
         <span className="flex items-center gap-1"><span className="inline-block w-3 h-2 rounded-sm" style={{background: "linear-gradient(to right, #001420, #32aad7)"}} /> Track B</span>
       </div>
-      {/* Region results + playback */}
-      {regionMetrics && normRect && (
-        <div className="rounded-xl bg-[#3a1a00]/80 border border-[#f5a623]/30 p-3 space-y-2">
-          {regionMetrics.specSim != null && (
+      {/* Region results — stable height placeholder */}
+      <div className={`rounded-xl border p-3 space-y-2 transition-opacity ${
+        regionMetrics && normRect
+          ? "bg-[#3a1a00]/80 border-[#f5a623]/30 opacity-100"
+          : "bg-transparent border-transparent opacity-0 pointer-events-none"
+      }`} style={{ minHeight: 72 }}>
+        {regionMetrics && (
+          <>
+            {regionMetrics.specSim != null && (
             <div>
               <div className="flex justify-between text-[11px] text-[#ffe0b2] mb-0.5">
                 <span>Spectral Similarity ({regionMetrics.loHz.toFixed(0)}–{regionMetrics.hiHz.toFixed(0)} Hz)</span>
@@ -1146,8 +1149,9 @@ const SpectrogramOverlay = memo(function SpectrogramOverlay({ bufA, bufB, fromA,
               </div>
             </div>
           )}
-        </div>
-      )}
+          </>
+        )}
+      </div>
     </div>
   );
 });
