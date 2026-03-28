@@ -1818,7 +1818,7 @@ export default function AudioCompareApp() {
               if (e.target === e.currentTarget) setShowCrossfader(false);
             }}
           >
-            <div className="bg-[#fdf6f0] rounded-3xl shadow-2xl w-[96vw] max-w-[1100px] max-h-[calc(96vh-3.5rem)] overflow-auto p-6 relative">
+            <div className="bg-[#fdf6f0] rounded-3xl shadow-2xl w-[96vw] max-w-[1100px] max-h-[calc(96vh-3.5rem)] overflow-auto p-4 sm:p-6 relative">
               {/* header */}
               <div className="flex items-center justify-between mb-5">
                 <div>
@@ -1887,17 +1887,21 @@ export default function AudioCompareApp() {
                 );
               })()}
 
-              <div className="flex gap-6 flex-wrap items-start justify-center">
+              <div className="flex gap-4 sm:gap-6 flex-wrap items-start justify-center">
                 {/* polygon canvas */}
                 <svg
                   width="540"
                   height="540"
                   viewBox="-1.5 -1.5 3 3"
-                  className="border border-[#d4a87a]/40 rounded-2xl bg-gradient-to-br from-[#fdf6f0] to-[#f5e6d0] cursor-crosshair select-none shrink-0"
+                  style={{ touchAction: "none", maxWidth: "min(540px, 88vw)", maxHeight: "min(540px, 88vw)" }}
+                  className="border border-[#d4a87a]/40 rounded-2xl bg-gradient-to-br from-[#fdf6f0] to-[#f5e6d0] cursor-crosshair select-none shrink-0 w-full h-auto"
                   onPointerDown={(e) => {
+                    e.preventDefault();
+                    e.currentTarget.setPointerCapture(e.pointerId);
                     const svg = e.currentTarget;
                     const pt = svg.createSVGPoint();
                     const move = (ev) => {
+                      ev.preventDefault();
                       pt.x = ev.clientX;
                       pt.y = ev.clientY;
                       const svgP = pt.matrixTransform(
@@ -1913,7 +1917,7 @@ export default function AudioCompareApp() {
                       window.removeEventListener("pointermove", move);
                       window.removeEventListener("pointerup", up);
                     };
-                    window.addEventListener("pointermove", move);
+                    window.addEventListener("pointermove", move, { passive: false });
                     window.addEventListener("pointerup", up);
                   }}
                 >
@@ -2152,7 +2156,7 @@ export default function AudioCompareApp() {
                 </svg>
 
                 {/* track list with controls */}
-                <div className="flex-1 min-w-[280px] max-h-[540px] overflow-y-auto space-y-0.5">
+                <div className="flex-1 min-w-[260px] max-h-[50vh] sm:max-h-[540px] overflow-y-auto space-y-1">
                   {tracks.map((t, i) => {
                     const w = mixWeights[i] ?? 0;
                     const c = TRACK_COLORS[i % TRACK_COLORS.length];
@@ -2250,18 +2254,24 @@ export default function AudioCompareApp() {
                               <ChevronDown size={14} />
                             </button>
                             <button
+                              onClick={() => setSoloId((prev) => (prev === t.id ? null : t.id))}
+                              className={`p-2 rounded-lg text-xs font-bold min-w-[2.5rem] min-h-[2.5rem] flex items-center justify-center ${soloId === t.id ? "bg-[#e8453c] text-white" : "hover:bg-[#f5e6d0] text-[#9a6a40]"}`}
+                            >
+                              <Headphones size={16} />
+                            </button>
+                            <button
                               onClick={() => toggleMute(t.id)}
-                              className={`p-1 rounded-lg ${muted ? "bg-red-50 text-red-500" : "hover:bg-[#f5e6d0] text-[#9a6a40]"}`}
+                              className={`p-2 rounded-lg min-w-[2.5rem] min-h-[2.5rem] flex items-center justify-center ${muted ? "bg-red-100 text-red-500" : "hover:bg-[#f5e6d0] text-[#9a6a40]"}`}
                             >
                               {muted ? (
-                                <VolumeX size={14} />
+                                <VolumeX size={16} />
                               ) : (
-                                <Volume2 size={14} />
+                                <Volume2 size={16} />
                               )}
                             </button>
                           </div>
                           {/* row 2: volume + pan sliders */}
-                          <div className="flex items-center gap-3 text-xs text-[#9a6a40]">
+                          <div className="flex items-center gap-2 text-xs text-[#9a6a40]">
                             <Volume2
                               size={12}
                               className="shrink-0 text-[#d4a87a]"
@@ -2275,13 +2285,12 @@ export default function AudioCompareApp() {
                               onChange={(e) =>
                                 setVolume(t.id, Number(e.target.value))
                               }
-                              className="flex-1"
-                              style={{ height: "4px" }}
+                              className="flex-1 min-h-[2rem]"
                             />
                             <span className="w-8 text-right font-mono text-[10px] text-[#9a6a40]">
                               {Math.round(t.volume * 100)}
                             </span>
-                            <span className="text-[10px] text-[#d4a87a] ml-2">
+                            <span className="text-[10px] text-[#d4a87a] ml-1">
                               L
                             </span>
                             <input
@@ -2293,8 +2302,7 @@ export default function AudioCompareApp() {
                               onChange={(e) =>
                                 setPan(t.id, Number(e.target.value))
                               }
-                              className="w-20"
-                              style={{ height: "4px" }}
+                              className="w-16 sm:w-20 min-h-[2rem]"
                             />
                             <span className="text-[10px] text-[#d4a87a]">
                               R
