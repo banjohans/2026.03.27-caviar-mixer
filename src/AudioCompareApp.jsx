@@ -24,6 +24,8 @@ import {
   GripVertical,
   ChevronUp,
   ChevronDown,
+  Activity,
+  GitCompareArrows,
 } from "lucide-react";
 
 /* ── helpers ── */
@@ -151,50 +153,172 @@ function dbStr(linear) {
 
 /* ── advanced analysis helpers ── */
 
+/*
+ * BPM detection via spectral-flux onset strength + autocorrelation
+ * Based on Ellis 2007 "Beat Tracking by Dynamic Programming" (the approach
+ * used by librosa.beat.beat_track) adapted for vanilla JS.
+ *
+ * Key design choices:
+ *  1. Spectral flux onset function — captures rhythmic changes in vocals,
+ *     drums, guitars equally (unlike energy-only which needs a kick drum).
+ *  2. Silence gating — frames below a noise floor are zeroed so intros,
+ *     outros and gaps don't dilute the autocorrelation.
+ *  3. Perceptual tempo prior (log-normal centered ~120 BPM) — biases
+ *     toward the musically most likely octave, reducing octave errors.
+ *  4. Harmonic summation of the autocorrelation — true beat periods
+ *     show peaks at 2× and ½× the period; noise doesn't.
+ */
 function detectBPM(buf, from = 0, to) {
-  const d = buf.getChannelData(0);
+  const ch = buf.getChannelData(0);
   const sr = buf.sampleRate;
-  const s = Math.floor(from * sr);
-  const e = to ? Math.min(Math.floor(to * sr), d.length) : d.length;
-  if (e - s < sr * 2) return null; // need at least 2 seconds
+  const s0 = Math.floor(from * sr);
+  const s1 = to != null ? Math.min(Math.floor(to * sr), ch.length) : ch.length;
+  const len = s1 - s0;
+  if (len < sr * 4) return { bpm: null, confidence: 0 };
 
-  // energy onset detection — divide into ~10ms windows
-  const wLen = Math.floor(sr * 0.01);
-  const nWin = Math.floor((e - s) / wLen);
-  const energy = new Float32Array(nWin);
-  for (let i = 0; i < nWin; i++) {
+  // ── 1. Short-time spectral flux (onset strength) ──────────────
+  // ~23 ms frames (~43 Hz hop rate) with 50 % overlap, matching librosa defaults
+  const fftN = 1024;
+  const hop = 512;
+  const nFrames = Math.floor((len - fftN) / hop) + 1;
+  if (nFrames < 100) return { bpm: null, confidence: 0 };
+
+  const hann = new Float32Array(fftN);
+  for (let i = 0; i < fftN; i++) hann[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (fftN - 1)));
+
+  const nBins = fftN / 2 + 1;
+  let prevMag = null;
+  const osf = new Float32Array(nFrames); // onset strength function
+  const frameRms = new Float32Array(nFrames);
+
+  for (let f = 0; f < nFrames; f++) {
+    const base = s0 + f * hop;
+    // windowed FFT (reuse fftInPlace from the codebase)
+    const re = new Float32Array(fftN);
+    const im = new Float32Array(fftN);
+    for (let i = 0; i < fftN; i++) re[i] = (ch[base + i] || 0) * hann[i];
+    fftInPlace(re, im);
+
+    const mag = new Float32Array(nBins);
+    let rmsSq = 0;
+    for (let i = 0; i < nBins; i++) {
+      mag[i] = Math.sqrt(re[i] * re[i] + im[i] * im[i]);
+      rmsSq += mag[i] * mag[i];
+    }
+    frameRms[f] = Math.sqrt(rmsSq / nBins);
+
+    if (prevMag) {
+      // half-wave rectified spectral flux — only positive (louder) changes
+      let flux = 0;
+      for (let i = 0; i < nBins; i++) {
+        const diff = mag[i] - prevMag[i];
+        if (diff > 0) flux += diff;
+      }
+      osf[f] = flux;
+    }
+    prevMag = mag;
+  }
+
+  // ── 2. Silence gating ─────────────────────────────────────────
+  // Find noise floor: median RMS of sorted frames, then gate at −40 dB below peak RMS
+  let peakRms = 0;
+  for (let i = 0; i < nFrames; i++) if (frameRms[i] > peakRms) peakRms = frameRms[i];
+  const gateThresh = peakRms * 0.01; // −40 dB
+  for (let i = 0; i < nFrames; i++) {
+    if (frameRms[i] < gateThresh) osf[i] = 0;
+  }
+
+  // ── 3. Normalise onset strength (subtract local mean, à la librosa) ──
+  const meanWin = Math.floor(sr / hop); // ~1 second window
+  const osfN = new Float32Array(nFrames);
+  let rSum = 0;
+  for (let i = 0; i < nFrames; i++) {
+    rSum += osf[i];
+    if (i >= meanWin) rSum -= osf[i - meanWin];
+    const localMean = rSum / Math.min(i + 1, meanWin);
+    osfN[i] = Math.max(0, osf[i] - localMean);
+  }
+
+  // ── 4. Autocorrelation of onset strength ──────────────────────
+  // BPM range 60–200 → periods in frames
+  const osfRate = sr / hop; // frames per second
+  const minLag = Math.floor(osfRate * (60 / 200)); // 200 BPM
+  const maxLag = Math.ceil(osfRate * (60 / 60));   // 60 BPM
+  const corrLen = maxLag - minLag + 1;
+  if (corrLen < 2) return { bpm: null, confidence: 0 };
+
+  const acLen = nFrames - maxLag;
+  if (acLen < 100) return { bpm: null, confidence: 0 };
+
+  const ac = new Float32Array(corrLen);
+  for (let lag = minLag; lag <= maxLag; lag++) {
     let sum = 0;
-    const ws = s + i * wLen;
-    for (let j = 0; j < wLen; j++) {
-      const v = d[ws + j] || 0;
-      sum += v * v;
-    }
-    energy[i] = sum / wLen;
+    for (let i = 0; i < acLen; i++) sum += osfN[i] * osfN[i + lag];
+    ac[lag - minLag] = sum;
   }
 
-  // onset detection (difference)
-  const onset = new Float32Array(nWin);
-  for (let i = 1; i < nWin; i++) {
-    onset[i] = Math.max(0, energy[i] - energy[i - 1]);
+  // ── 5. Perceptual tempo prior (log-normal, µ=120 BPM, σ=0.9 octaves) ──
+  // This biases towards musically common tempi and resolves octave ambiguity
+  const prior = new Float32Array(corrLen);
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    const bpm = (osfRate * 60) / lag;
+    const logRatio = Math.log2(bpm / 120);
+    prior[lag - minLag] = Math.exp(-0.5 * (logRatio / 0.9) * (logRatio / 0.9));
   }
 
-  // autocorrelation in BPM range 60-200
-  const minLag = Math.floor((60 / 200) * (1000 / 10)); // ~30 windows
-  const maxLag = Math.floor((60 / 60) * (1000 / 10)); // ~100 windows
-  let bestLag = minLag,
-    bestCorr = -1;
-  for (let lag = minLag; lag <= Math.min(maxLag, nWin / 2); lag++) {
-    let corr = 0;
-    const n = Math.min(nWin - lag, 500);
-    for (let i = 0; i < n; i++) {
-      corr += onset[i] * onset[i + lag];
-    }
-    if (corr > bestCorr) {
-      bestCorr = corr;
-      bestLag = lag;
-    }
+  // ── 6. Harmonic summation + prior weighting ───────────────────
+  const scored = new Float32Array(corrLen);
+  let acMax = -Infinity;
+  for (let i = 0; i < corrLen; i++) if (ac[i] > acMax) acMax = ac[i];
+  if (acMax <= 0) return { bpm: null, confidence: 0 };
+
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    const idx = lag - minLag;
+    let s = ac[idx] / acMax;
+
+    // Check harmonics: 2×lag (half-tempo) and lag/2 (double-tempo)
+    const i2 = lag * 2 - minLag;
+    if (i2 >= 0 && i2 < corrLen) s += (ac[i2] / acMax) * 0.5;
+    const iH = Math.round(lag / 2) - minLag;
+    if (iH >= 0 && iH < corrLen) s += (ac[iH] / acMax) * 0.4;
+    // 3× lag (triplet / bar level)
+    const i3 = lag * 3 - minLag;
+    if (i3 >= 0 && i3 < corrLen) s += (ac[i3] / acMax) * 0.15;
+
+    scored[idx] = s * prior[idx];
   }
-  return Math.round(60 / (bestLag * 0.01));
+
+  // ── 7. Find best tempo ────────────────────────────────────────
+  let bestIdx = 0;
+  for (let i = 1; i < corrLen; i++) {
+    if (scored[i] > scored[bestIdx]) bestIdx = i;
+  }
+  const bestLag = bestIdx + minLag;
+
+  // Parabolic interpolation for sub-frame precision
+  let refinedLag = bestLag;
+  if (bestIdx > 0 && bestIdx < corrLen - 1) {
+    const y0 = ac[bestIdx - 1], y1 = ac[bestIdx], y2 = ac[bestIdx + 1];
+    const denom = 2 * (2 * y1 - y0 - y2);
+    if (Math.abs(denom) > 1e-10) refinedLag = bestLag + (y0 - y2) / denom;
+  }
+
+  let bpm = (osfRate * 60) / refinedLag;
+  // Octave normalize to 80–160
+  while (bpm > 160) bpm /= 2;
+  while (bpm < 80) bpm *= 2;
+
+  // ── 8. Confidence from peak prominence ────────────────────────
+  let acMean = 0;
+  for (let i = 0; i < corrLen; i++) acMean += ac[i];
+  acMean /= corrLen;
+  const prominence = acMean > 0 ? (ac[bestIdx] - acMean) / acMean : 0;
+  const confidence = Math.max(0, Math.min(1, prominence / 4));
+
+  return {
+    bpm: Math.round(bpm * 10) / 10,
+    confidence,
+  };
 }
 
 function computeSpectrum(buf, from = 0, to, fftSize = 4096) {
@@ -295,6 +419,44 @@ function spectralSimilarity(specA, specB) {
   return denom > 0 ? dot / denom : 0;
 }
 
+/**
+ * Compute a spectrogram (2D array of dB magnitude frames) for rendering.
+ * Returns { frames: Float32Array[], nBins, binHz, maxDb, minDb }
+ * Each frame[i] is a Float32Array of dB values for frequency bins.
+ */
+function computeSpectrogram(buf, from = 0, to, fftSize = 2048) {
+  const d = buf.getChannelData(0);
+  const sr = buf.sampleRate;
+  const s = Math.floor(from * sr);
+  const e = to != null ? Math.min(Math.floor(to * sr), d.length) : d.length;
+  const hop = Math.floor(fftSize / 2);
+  const nFrames = Math.floor((e - s - fftSize) / hop) + 1;
+  if (nFrames < 2) return null;
+  const nBins = fftSize / 2;
+  const hann = new Float32Array(fftSize);
+  for (let i = 0; i < fftSize; i++) hann[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (fftSize - 1)));
+
+  const frames = [];
+  let globalMax = -Infinity, globalMin = Infinity;
+  for (let f = 0; f < nFrames; f++) {
+    const base = s + f * hop;
+    const re = new Float32Array(fftSize);
+    const im = new Float32Array(fftSize);
+    for (let i = 0; i < fftSize; i++) re[i] = (d[base + i] || 0) * hann[i];
+    fftInPlace(re, im);
+    const dbFrame = new Float32Array(nBins);
+    for (let i = 0; i < nBins; i++) {
+      const mag = Math.sqrt(re[i] * re[i] + im[i] * im[i]);
+      const db = 20 * Math.log10(Math.max(mag, 1e-10));
+      dbFrame[i] = db;
+      if (db > globalMax) globalMax = db;
+      if (db < globalMin) globalMin = db;
+    }
+    frames.push(dbFrame);
+  }
+  return { frames, nBins, binHz: sr / fftSize, maxDb: globalMax, minDb: Math.max(globalMin, globalMax - 90) };
+}
+
 function computeDynamicRange(buf, from = 0, to) {
   const d = buf.getChannelData(0);
   const sr = buf.sampleRate;
@@ -312,7 +474,7 @@ function computeDynamicRange(buf, from = 0, to) {
   return rms > 0 ? peak / rms : 0;
 }
 
-function crossCorrelation(bufA, bufB, fromA, toA, fromB, toB) {
+function crossCorrelation(bufA, bufB, fromA, toA, fromB, toB, invertB = false) {
   const dA = bufA.getChannelData(0),
     dB = bufB.getChannelData(0);
   const srA = bufA.sampleRate,
@@ -323,6 +485,7 @@ function crossCorrelation(bufA, bufB, fromA, toA, fromB, toB) {
     eB = Math.min(Math.floor(toB * srB), dB.length);
   const len = Math.min(eA - sA, eB - sB, srA * 10); // max 10s
   if (len <= 0) return 0;
+  const sign = invertB ? -1 : 1;
   // downsample to ~4000 Hz for speed
   const ds = Math.max(1, Math.floor(srA / 4000));
   const n = Math.floor(len / ds);
@@ -331,7 +494,7 @@ function crossCorrelation(bufA, bufB, fromA, toA, fromB, toB) {
     magB = 0;
   for (let i = 0; i < n; i++) {
     const a = dA[sA + i * ds] || 0;
-    const b = dB[sB + i * ds] || 0;
+    const b = (dB[sB + i * ds] || 0) * sign;
     dot += a * b;
     magA += a * a;
     magB += b * b;
@@ -341,15 +504,23 @@ function crossCorrelation(bufA, bufB, fromA, toA, fromB, toB) {
 }
 
 function analyzeTrackFull(buf, from, to) {
-  const bpm = detectBPM(buf, from, to);
+  // BPM uses the FULL track (needs many windows for reliable detection)
+  const bpmResult = detectBPM(buf, 0, buf.duration);
+  // spectral / level analysis uses the selected segment
   const spec = computeSpectrum(buf, from, to);
   const dynRange = computeDynamicRange(buf, from, to);
+  const rmsData = computeRms(buf, from || 0, to || buf.duration);
+  const crestFactorDb = rmsData.rms > 0 ? 20 * Math.log10(rmsData.peak / rmsData.rms) : 0;
   return {
-    bpm,
+    bpm: bpmResult.bpm,
+    bpmConfidence: bpmResult.confidence,
     centroid: spec?.centroid || 0,
     bandwidth: spec?.bandwidth || 0,
     spectrum: spec?.spectrum || null,
     dynRange,
+    rms: rmsData.rms,
+    peak: rmsData.peak,
+    crestFactorDb,
   };
 }
 
@@ -479,6 +650,508 @@ function drawWave(
   }
 }
 
+/* ── Spectrogram overlay for compare view ── */
+
+function drawSpectrogram(canvas, sgData, colorFn) {
+  if (!canvas || !sgData) return;
+  const ctx = canvas.getContext("2d");
+  const { frames, nBins, maxDb, minDb } = sgData;
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  const nF = frames.length;
+  const colW = w / nF;
+  const range = maxDb - minDb || 1;
+  // draw bottom-up: low frequencies at bottom
+  for (let f = 0; f < nF; f++) {
+    const frame = frames[f];
+    // only draw up to ~12 kHz for visual clarity
+    const maxBin = Math.min(nBins, Math.floor(nBins * 0.6));
+    const rowH = h / maxBin;
+    for (let b = 0; b < maxBin; b++) {
+      const norm = Math.max(0, Math.min(1, (frame[b] - minDb) / range));
+      const [r, g, bl] = colorFn(norm);
+      ctx.fillStyle = `rgb(${r},${g},${bl})`;
+      ctx.fillRect(f * colW, h - (b + 1) * rowH, Math.ceil(colW), Math.ceil(rowH));
+    }
+  }
+}
+
+// warm color map (track A — orange/gold)
+function colorMapA(t) {
+  const r = Math.floor(10 + t * 235);
+  const g = Math.floor(5 + t * 140);
+  const b = Math.floor(0 + t * 30);
+  return [r, g, b];
+}
+// cool color map (track B — teal/blue)
+function colorMapB(t) {
+  const r = Math.floor(0 + t * 50);
+  const g = Math.floor(10 + t * 170);
+  const b = Math.floor(20 + t * 215);
+  return [r, g, b];
+}
+
+const SpectrogramOverlay = memo(function SpectrogramOverlay({ bufA, bufB, fromA, toA, fromB, toB }) {
+  const canvasARef = useRef(null);
+  const canvasBRef = useRef(null);
+  const containerRef = useRef(null);
+  const [fade, setFade] = useState(0.5);
+  const sgARef = useRef(null);
+  const sgBRef = useRef(null);
+  const [drawGen, setDrawGen] = useState(0);
+
+  // 2D rectangle selection: { x0, y0, x1, y1 } all 0–1 fractions
+  const [selRect, setSelRect] = useState(null);
+  const draggingRef = useRef(false);
+  const startPtRef = useRef({ x: 0, y: 0 });
+  const [regionMetrics, setRegionMetrics] = useState(null);
+  const [selDone, setSelDone] = useState(0); // bumped on pointer-up to trigger similarity calc
+  const [regionPhaseInvert, setRegionPhaseInvert] = useState(false);
+
+  // Audio playback state
+  const [playing, setPlaying] = useState(false);
+  const playCtxRef = useRef(null); // { srcA, srcB, gainA, gainB, ctx }
+  const playProgressRef = useRef(0);
+  const [playProgress, setPlayProgress] = useState(0);
+  const rafRef = useRef(null);
+  const playStartRef = useRef(0);
+  const playDurRef = useRef(0);
+
+  // Max frequency rendered (fraction of Nyquist)
+  const MAX_FREQ_FRAC = 0.6; // ~12 kHz at 44.1 kHz
+
+  useEffect(() => {
+    if (!bufA || !bufB) return;
+    const maxFrames = 256;
+    const durA = toA - fromA, durB = toB - fromB;
+    const fftA = Math.min(2048, Math.pow(2, Math.ceil(Math.log2(bufA.sampleRate * durA / maxFrames * 2))));
+    const fftB = Math.min(2048, Math.pow(2, Math.ceil(Math.log2(bufB.sampleRate * durB / maxFrames * 2))));
+    sgARef.current = computeSpectrogram(bufA, fromA, toA, Math.max(512, fftA));
+    sgBRef.current = computeSpectrogram(bufB, fromB, toB, Math.max(512, fftB));
+    setDrawGen((g) => g + 1);
+    setSelRect(null);
+    setRegionMetrics(null);
+    stopPlayback();
+  }, [bufA, bufB, fromA, toA, fromB, toB]);
+
+  useEffect(() => {
+    if (!sgARef.current || !sgBRef.current) return;
+    drawSpectrogram(canvasARef.current, sgARef.current, colorMapA);
+    drawSpectrogram(canvasBRef.current, sgBRef.current, colorMapB);
+  }, [drawGen]);
+
+  // Helper: get x,y fraction from pointer event
+  const getXY = useCallback((e) => {
+    const rect = containerRef.current.getBoundingClientRect();
+    const cx = e.touches ? e.touches[0].clientX : e.clientX;
+    const cy = e.touches ? e.touches[0].clientY : e.clientY;
+    return {
+      x: Math.max(0, Math.min(1, (cx - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, (cy - rect.top) / rect.height)),
+    };
+  }, []);
+
+  const onPointerDown = useCallback((e) => {
+    e.preventDefault();
+    draggingRef.current = true;
+    const pt = getXY(e);
+    startPtRef.current = pt;
+    setSelRect({ x0: pt.x, y0: pt.y, x1: pt.x, y1: pt.y });
+    setRegionMetrics(null);
+    stopPlayback();
+  }, [getXY]);
+
+  const onPointerMove = useCallback((e) => {
+    if (!draggingRef.current) return;
+    e.preventDefault();
+    const pt = getXY(e);
+    setSelRect({ x0: startPtRef.current.x, y0: startPtRef.current.y, x1: pt.x, y1: pt.y });
+  }, [getXY]);
+
+  const onPointerUp = useCallback(() => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    setSelDone((n) => n + 1);
+  }, []);
+
+  useEffect(() => {
+    const up = () => { if (draggingRef.current) { draggingRef.current = false; setSelDone((n) => n + 1); } };
+    window.addEventListener("mouseup", up);
+    window.addEventListener("touchend", up);
+    return () => { window.removeEventListener("mouseup", up); window.removeEventListener("touchend", up); };
+  }, []);
+
+  // Derived normalized rect
+  const normRect = useMemo(() => {
+    if (!selRect) return null;
+    const left = Math.min(selRect.x0, selRect.x1);
+    const right = Math.max(selRect.x0, selRect.x1);
+    const top = Math.min(selRect.y0, selRect.y1);
+    const bottom = Math.max(selRect.y0, selRect.y1);
+    if (right - left < 0.015 && bottom - top < 0.03) return null;
+    return { left, right, top, bottom };
+  }, [selRect]);
+
+  // Convert Y fraction (0=top=high freq, 1=bottom=low freq) to Hz
+  const yToHz = useCallback((yFrac) => {
+    const nyquist = (bufA?.sampleRate || 44100) / 2;
+    const maxHz = nyquist * MAX_FREQ_FRAC;
+    return maxHz * (1 - yFrac);
+  }, [bufA]);
+
+  // Compute region similarity (now uses 2D: time range + freq-limited spectrum)
+  useEffect(() => {
+    if (!normRect || !bufA || !bufB) return;
+    const { left, right, top, bottom } = normRect;
+    const rFromA = fromA + left * (toA - fromA);
+    const rToA = fromA + right * (toA - fromA);
+    const rFromB = fromB + left * (toB - fromB);
+    const rToB = fromB + right * (toB - fromB);
+    const hiHz = yToHz(top);
+    const loHz = yToHz(bottom);
+    const specA = computeSpectrum(bufA, rFromA, rToA);
+    const specB = computeSpectrum(bufB, rFromB, rToB);
+    // Limit similarity to selected frequency bins
+    let sim = null;
+    if (specA && specB) {
+      const binHz = specA.binHz;
+      const loBin = Math.max(1, Math.floor(loHz / binHz));
+      const hiBin = Math.min(specA.bins, Math.ceil(hiHz / binHz));
+      if (hiBin > loBin) {
+        const sliceA = specA.spectrum.slice(loBin, hiBin);
+        const sliceB = specB.spectrum.slice(loBin, hiBin);
+        sim = spectralSimilarity(sliceA, sliceB);
+      }
+    }
+    const corr = crossCorrelation(bufA, bufB, rFromA, rToA, rFromB, rToB, regionPhaseInvert);
+    const durSec = Math.max(rToA - rFromA, rToB - rFromB);
+    setRegionMetrics({ specSim: sim, corr, duration: durSec, loHz, hiHz });
+  }, [selDone, bufA, bufB, fromA, toA, fromB, toB, regionPhaseInvert]);
+
+  // ── Audio playback helpers ──
+  function stopPlayback() {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
+    const pc = playCtxRef.current;
+    if (pc) {
+      try { pc.srcA.stop(); } catch (_) {}
+      try { pc.srcB.stop(); } catch (_) {}
+      try { pc.ctx.close(); } catch (_) {}
+      playCtxRef.current = null;
+    }
+    setPlaying(false);
+    setPlayProgress(0);
+  }
+
+  function startPlayback() {
+    if (!normRect || !bufA || !bufB) return;
+    stopPlayback();
+    const { left, right, top, bottom } = normRect;
+    const rFromA = fromA + left * (toA - fromA);
+    const rToA = fromA + right * (toA - fromA);
+    const rFromB = fromB + left * (toB - fromB);
+    const rToB = fromB + right * (toB - fromB);
+    const hiHz = yToHz(top);
+    const loHz = yToHz(bottom);
+    const dur = Math.max(rToA - rFromA, rToB - rFromB);
+    if (dur < 0.05) return;
+
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    ctx.resume();
+
+    // Create source A
+    const srcA = ctx.createBufferSource();
+    srcA.buffer = bufA;
+    const gainA = ctx.createGain();
+    // Create source B
+    const srcB = ctx.createBufferSource();
+    srcB.buffer = bufB;
+    const gainB = ctx.createGain();
+
+    // Bandpass filters for frequency selection
+    const makeFilter = () => {
+      const center = Math.sqrt(Math.max(loHz, 20) * Math.min(hiHz, 20000));
+      const bw = Math.min(hiHz, 20000) - Math.max(loHz, 20);
+      if (bw > 18000) return null; // nearly full range, skip filter
+      const lo = ctx.createBiquadFilter();
+      lo.type = "highpass";
+      lo.frequency.value = Math.max(loHz, 20);
+      lo.Q.value = 0.707;
+      const hi = ctx.createBiquadFilter();
+      hi.type = "lowpass";
+      hi.frequency.value = Math.min(hiHz, 20000);
+      hi.Q.value = 0.707;
+      return { lo, hi };
+    };
+
+    const filterA = makeFilter();
+    const filterB = makeFilter();
+
+    // Wire A
+    if (filterA) {
+      srcA.connect(filterA.lo);
+      filterA.lo.connect(filterA.hi);
+      filterA.hi.connect(gainA);
+    } else {
+      srcA.connect(gainA);
+    }
+    gainA.connect(ctx.destination);
+
+    // Wire B
+    if (filterB) {
+      srcB.connect(filterB.lo);
+      filterB.lo.connect(filterB.hi);
+      filterB.hi.connect(gainB);
+    } else {
+      srcB.connect(gainB);
+    }
+    gainB.connect(ctx.destination);
+
+    // Apply crossfade
+    gainA.gain.value = 1 - fade;
+    gainB.gain.value = fade;
+
+    srcA.start(0, rFromA, rToA - rFromA);
+    srcB.start(0, rFromB, rToB - rFromB);
+
+    playCtxRef.current = { srcA, srcB, gainA, gainB, ctx, rFromA, rToA, rFromB, rToB, filterA, filterB };
+    playStartRef.current = ctx.currentTime;
+    playDurRef.current = dur;
+    setPlaying(true);
+
+    // On ended, restart for looping
+    const scheduleLoop = () => {
+      if (!playCtxRef.current || playCtxRef.current.ctx !== ctx) return;
+      // Create new sources for next loop iteration
+      const newSrcA = ctx.createBufferSource();
+      newSrcA.buffer = bufA;
+      const newSrcB = ctx.createBufferSource();
+      newSrcB.buffer = bufB;
+      if (filterA) { newSrcA.connect(filterA.lo); } else { newSrcA.connect(gainA); }
+      if (filterB) { newSrcB.connect(filterB.lo); } else { newSrcB.connect(gainB); }
+      newSrcA.start(0, rFromA, rToA - rFromA);
+      newSrcB.start(0, rFromB, rToB - rFromB);
+      playCtxRef.current.srcA = newSrcA;
+      playCtxRef.current.srcB = newSrcB;
+      playStartRef.current = ctx.currentTime;
+      newSrcA.onended = scheduleLoop;
+    };
+    srcA.onended = scheduleLoop;
+
+    // Animate progress (loops)
+    const animate = () => {
+      if (!playCtxRef.current || playCtxRef.current.ctx !== ctx) return;
+      const elapsed = ctx.currentTime - playStartRef.current;
+      const p = dur > 0 ? (elapsed % dur) / dur : 0;
+      setPlayProgress(p);
+      rafRef.current = requestAnimationFrame(animate);
+    };
+    rafRef.current = requestAnimationFrame(animate);
+  }
+
+  // Update gains when fade changes during playback
+  useEffect(() => {
+    const pc = playCtxRef.current;
+    if (pc) {
+      pc.gainA.gain.value = 1 - fade;
+      pc.gainB.gain.value = fade;
+    }
+  }, [fade]);
+
+  // Cleanup on unmount
+  useEffect(() => () => stopPlayback(), []);
+
+  if (!drawGen) {
+    return (
+      <div className="flex items-center gap-2 text-[#9a6a40] text-sm py-4">
+        <span className="animate-spin inline-block w-4 h-4 border-2 border-[#d4a87a] border-t-transparent rounded-full" />
+        Computing spectrogram…
+      </div>
+    );
+  }
+
+  // Rect CSS helpers
+  const rLeft = normRect ? normRect.left * 100 : 0;
+  const rTop = normRect ? normRect.top * 100 : 0;
+  const rW = normRect ? (normRect.right - normRect.left) * 100 : 0;
+  const rH = normRect ? (normRect.bottom - normRect.top) * 100 : 0;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="text-xs font-semibold text-[#5a2a00]">Spectrogram (waterfall)</div>
+        <div className="text-[9px] text-[#9a6a40] italic">Drag a rectangle to select time + frequency</div>
+      </div>
+      <div
+        ref={containerRef}
+        className="relative rounded-xl overflow-hidden bg-[#1a0a00] cursor-crosshair select-none touch-none"
+        style={{ height: 200 }}
+        onMouseDown={onPointerDown}
+        onMouseMove={onPointerMove}
+        onMouseUp={onPointerUp}
+        onTouchStart={onPointerDown}
+        onTouchMove={onPointerMove}
+        onTouchEnd={onPointerUp}
+      >
+        <canvas
+          ref={canvasARef}
+          width={600}
+          height={200}
+          className="absolute inset-0 w-full h-full pointer-events-none"
+          style={{ opacity: 1 - fade }}
+        />
+        <canvas
+          ref={canvasBRef}
+          width={600}
+          height={200}
+          className="absolute inset-0 w-full h-full pointer-events-none"
+          style={{ opacity: fade }}
+        />
+        {/* 2D Selection rectangle */}
+        {normRect && rW > 0.3 && (
+          <>
+            {/* Dim outside selection — four rects forming an L-shape mask */}
+            <div className="absolute left-0 top-0 bg-black/50 pointer-events-none" style={{ width: `${rLeft}%`, height: "100%" }} />
+            <div className="absolute right-0 top-0 bg-black/50 pointer-events-none" style={{ width: `${100 - rLeft - rW}%`, height: "100%" }} />
+            <div className="absolute bg-black/50 pointer-events-none" style={{ left: `${rLeft}%`, width: `${rW}%`, top: 0, height: `${rTop}%` }} />
+            <div className="absolute bg-black/50 pointer-events-none" style={{ left: `${rLeft}%`, width: `${rW}%`, top: `${rTop + rH}%`, height: `${100 - rTop - rH}%` }} />
+            {/* Selection border */}
+            <div
+              className="absolute pointer-events-none border-2 border-[#f5a623] rounded-sm"
+              style={{ left: `${rLeft}%`, top: `${rTop}%`, width: `${rW}%`, height: `${rH}%` }}
+            />
+            {/* Playback progress line inside selection */}
+            {playing && playProgress > 0 && (
+              <div
+                className="absolute top-0 pointer-events-none bg-white/70"
+                style={{
+                  left: `${rLeft + playProgress * rW}%`,
+                  top: `${rTop}%`,
+                  width: 2,
+                  height: `${rH}%`,
+                }}
+              />
+            )}
+            {/* Labels */}
+            <div
+              className="absolute pointer-events-none text-[8px] font-mono text-[#f5a623] bg-black/70 rounded px-0.5 leading-tight"
+              style={{ left: `${rLeft}%`, top: `${rTop}%`, transform: "translate(2px, 2px)" }}
+            >
+              <div>{yToHz(normRect.top).toFixed(0)} Hz</div>
+              <div>{((normRect.right - normRect.left) * Math.max(toA - fromA, toB - fromB)).toFixed(1)}s</div>
+            </div>
+            <div
+              className="absolute pointer-events-none text-[8px] font-mono text-[#f5a623] bg-black/70 rounded px-0.5"
+              style={{ left: `${rLeft}%`, top: `${rTop + rH}%`, transform: "translate(2px, -100%)" }}
+            >
+              {yToHz(normRect.bottom).toFixed(0)} Hz
+            </div>
+          </>
+        )}
+        {/* frequency axis labels */}
+        <div className="absolute left-1 top-0 bottom-0 flex flex-col justify-between text-[8px] text-white/50 pointer-events-none py-1">
+          <span>12k</span>
+          <span>6k</span>
+          <span>2k</span>
+          <span>0 Hz</span>
+        </div>
+        {/* crossfade position indicator */}
+        <div className="absolute bottom-1 right-2 text-[9px] text-white/60 pointer-events-none">
+          {fade < 0.3 ? "← Track A" : fade > 0.7 ? "Track B →" : "Overlap"}
+        </div>
+      </div>
+      {/* Play controls — directly below spectrogram when selection exists */}
+      {normRect && (
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => playing ? stopPlayback() : startPlayback()}
+            className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1 rounded-full bg-[#f5a623]/20 text-[#f5a623] hover:bg-[#f5a623]/40 transition-colors"
+          >
+            {playing ? <Pause size={13} /> : <Play size={13} />}
+            {playing ? "Stop" : "Play selection"}
+          </button>
+          {playing && (
+            <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
+              <div className="h-full rounded-full bg-[#f5a623] transition-[width] duration-75" style={{ width: `${playProgress * 100}%` }} />
+            </div>
+          )}
+          {regionMetrics && (
+            <span className="text-[9px] text-[#9a6a40] ml-auto">
+              {regionMetrics.duration.toFixed(1)}s · {regionMetrics.loHz.toFixed(0)}–{regionMetrics.hiHz.toFixed(0)} Hz
+            </span>
+          )}
+          <button
+            onClick={() => { setSelRect(null); setRegionMetrics(null); stopPlayback(); }}
+            className="text-[9px] text-[#9a6a40] hover:text-[#f5a623]"
+            title="Clear selection"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+      {/* Crossfade slider — also controls audio A/B */}
+      <div className="flex items-center gap-3">
+        <span className="text-[10px] font-semibold text-[#c97a30] w-8 text-right">A</span>
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          value={fade}
+          onChange={(e) => setFade(Number(e.target.value))}
+          className="flex-1 accent-[#f5a623]"
+          style={{ height: 4 }}
+        />
+        <span className="text-[10px] font-semibold text-[#3a9aba] w-8">B</span>
+      </div>
+      <div className="flex justify-between text-[9px] text-[#9a6a40]">
+        <span className="flex items-center gap-1"><span className="inline-block w-3 h-2 rounded-sm" style={{background: "linear-gradient(to right, #0a0500, #f5a623)"}} /> Track A</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-3 h-2 rounded-sm" style={{background: "linear-gradient(to right, #001420, #32aad7)"}} /> Track B</span>
+      </div>
+      {/* Region results + playback */}
+      {regionMetrics && normRect && (
+        <div className="rounded-xl bg-[#3a1a00]/80 border border-[#f5a623]/30 p-3 space-y-2">
+          {regionMetrics.specSim != null && (
+            <div>
+              <div className="flex justify-between text-[11px] text-[#ffe0b2] mb-0.5">
+                <span>Spectral Similarity ({regionMetrics.loHz.toFixed(0)}–{regionMetrics.hiHz.toFixed(0)} Hz)</span>
+                <span className="font-bold">{(regionMetrics.specSim * 100).toFixed(0)}%</span>
+              </div>
+              <div className="h-2 rounded-full bg-white/10 overflow-hidden">
+                <div className="h-full rounded-full bg-gradient-to-r from-[#f5a623] to-[#e8453c]" style={{ width: `${regionMetrics.specSim * 100}%` }} />
+              </div>
+            </div>
+          )}
+          {regionMetrics.corr != null && (
+            <div>
+              <div className="flex justify-between text-[11px] text-[#ffe0b2] mb-0.5">
+                <span className="flex items-center gap-1.5">
+                  Waveform Correlation
+                  <button
+                    onClick={() => setRegionPhaseInvert((v) => !v)}
+                    className={`text-[9px] px-1.5 py-0.5 rounded-full border transition-colors ${
+                      regionPhaseInvert
+                        ? "bg-[#f5a623]/30 border-[#f5a623] text-[#f5a623]"
+                        : "bg-transparent border-[#9a6a40]/40 text-[#9a6a40] hover:border-[#f5a623]/60"
+                    }`}
+                    title="Invert phase of Track B before comparing (useful if one track is phase-inverted)"
+                  >
+                    Ø Invert B
+                  </button>
+                </span>
+                <span className="font-bold">{(regionMetrics.corr * 100).toFixed(0)}%</span>
+              </div>
+              <div className="h-2 rounded-full bg-white/10 overflow-hidden">
+                <div className="h-full rounded-full bg-gradient-to-r from-[#d4a87a] to-[#f5a623]" style={{ width: `${regionMetrics.corr * 100}%` }} />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});
+
 /* ── Waveform component ── */
 
 const WaveformTrack = memo(function WaveformTrack({
@@ -507,6 +1180,9 @@ const WaveformTrack = memo(function WaveformTrack({
   singlePlaying,
   color,
   analysis,
+  fullAnalysis,
+  analysisExpanded,
+  onToggleAnalysis,
 }) {
   const canvasRef = useRef(null);
   const dragRef = useRef(null);
@@ -889,7 +1565,82 @@ const WaveformTrack = memo(function WaveformTrack({
         <span className="text-[#b89070] ml-auto">
           Drag = segment · Alt+drag = skip zone · Punch IN/OUT = precise points
         </span>
+        <button
+          onClick={() => onToggleAnalysis(track.id)}
+          className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#5a2a00]/10 hover:bg-[#5a2a00]/20 text-[#7a4a20] font-medium transition-colors min-w-[2.5rem] min-h-[2rem] justify-center"
+          title="Analyze track"
+        >
+          <Activity size={12} />
+          Analyse
+          {analysisExpanded ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+        </button>
       </div>
+
+      {/* ── Full analysis panel ── */}
+      {analysisExpanded && (
+        <div className="mt-2 rounded-xl bg-[#faf0e6] border border-[#d4a87a]/40 p-3 text-[11px] text-[#5a2a00]">
+          {fullAnalysis ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-2">
+              <div>
+                <span className="font-semibold text-[#9a6a40]">BPM</span>
+                <div className="text-base font-bold text-[#3a1a00]">
+                  {fullAnalysis.bpm > 0 ? fullAnalysis.bpm.toFixed(1) : "N/A"}
+                  {fullAnalysis.bpmConfidence > 0 && (
+                    <span className="ml-1 text-[10px] font-normal text-[#9a6a40]">
+                      ({(fullAnalysis.bpmConfidence * 100).toFixed(0)}% confident)
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div>
+                <span className="font-semibold text-[#9a6a40]">Spectral Centroid</span>
+                <div className="text-base font-bold text-[#3a1a00]">
+                  {fullAnalysis.centroid > 0 ? `${fullAnalysis.centroid.toFixed(0)} Hz` : "N/A"}
+                </div>
+              </div>
+              <div>
+                <span className="font-semibold text-[#9a6a40]">Bandwidth</span>
+                <div className="text-base font-bold text-[#3a1a00]">
+                  {fullAnalysis.bandwidth > 0 ? `${fullAnalysis.bandwidth.toFixed(0)} Hz` : "N/A"}
+                </div>
+              </div>
+              <div>
+                <span className="font-semibold text-[#9a6a40]">RMS</span>
+                <div className="text-base font-bold text-[#3a1a00]">{dbStr(fullAnalysis.rms)}</div>
+              </div>
+              <div>
+                <span className="font-semibold text-[#9a6a40]">Peak</span>
+                <div className="text-base font-bold text-[#3a1a00]">{dbStr(fullAnalysis.peak)}</div>
+              </div>
+              <div>
+                <span className="font-semibold text-[#9a6a40]">Crest Factor</span>
+                <div className="text-base font-bold text-[#3a1a00]">
+                  {fullAnalysis.crestFactorDb > 0 ? `${fullAnalysis.crestFactorDb.toFixed(1)} dB` : "N/A"}
+                </div>
+              </div>
+              {fullAnalysis.dynRange != null && (
+                <div className="col-span-2 sm:col-span-3">
+                  <span className="font-semibold text-[#9a6a40]">Dynamic Range</span>
+                  <div className="mt-1 h-2 rounded-full bg-[#d4a87a]/20 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-[#f5a623] to-[#e8453c]"
+                      style={{ width: `${Math.min(100, (fullAnalysis.dynRange / 30) * 100)}%` }}
+                    />
+                  </div>
+                  <div className="text-[10px] text-[#9a6a40] mt-0.5">
+                    {fullAnalysis.dynRange.toFixed(1)} dB
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-[#9a6a40]">
+              <span className="animate-spin inline-block w-3 h-3 border-2 border-[#d4a87a] border-t-transparent rounded-full" />
+              Analyzing…
+            </div>
+          )}
+        </div>
+      )}
 
       {/* skip zones list */}
       {skipZones.length > 0 && (
@@ -961,12 +1712,15 @@ export default function AudioCompareApp() {
   const [abTrackA, setAbTrackA] = useState(0);
   const [abTrackB, setAbTrackB] = useState(1);
   const [abValue, setAbValue] = useState(0.5);
-  const [soloId, setSoloId] = useState(null);
+  const [soloId, setSoloId] = useState(new Set());
   const [singlePlayId, setSinglePlayId] = useState(null);
   const [singlePlayhead, setSinglePlayhead] = useState(null);
   const [analyses, setAnalyses] = useState({});
   const [fullAnalyses, setFullAnalyses] = useState({});
+  const [expandedAnalysis, setExpandedAnalysis] = useState(new Set());
   const [comparing, setComparing] = useState(false);
+  const [compareA, setCompareA] = useState(null);
+  const [compareB, setCompareB] = useState(null);
   const [punchState, setPunchState] = useState(null);
   const [dragId, setDragId] = useState(null);
 
@@ -1072,7 +1826,7 @@ export default function AudioCompareApp() {
       if (!node) return;
       const comp = gainMatch ? (gainCompensation[track.id] ?? 1) : 1;
       let v;
-      if (soloId && track.id !== soloId) {
+      if (soloId.size > 0 && !soloId.has(track.id)) {
         v = 0;
       } else {
         v = track.muted ? 0 : track.volume;
@@ -1129,7 +1883,26 @@ export default function AudioCompareApp() {
       }
     });
     setAnalyses(result);
+    setFullAnalyses({});
   }, [tracks, segmentLength]);
+
+  /* lazy full analysis when panel expanded */
+  useEffect(() => {
+    expandedAnalysis.forEach((id) => {
+      if (fullAnalyses[id]) return;
+      const buf = decodedBuffers.current[id];
+      if (!buf) return;
+      const t = tracks.find((tr) => tr.id === id);
+      if (!t) return;
+      const from = t.segStart || 0;
+      const to = Math.min(from + segmentLength, t.duration || buf.duration);
+      // run async-ish via setTimeout so UI isn't blocked
+      setTimeout(() => {
+        const result = analyzeTrackFull(buf, from, to);
+        setFullAnalyses((prev) => ({ ...prev, [id]: result }));
+      }, 0);
+    });
+  }, [expandedAnalysis, tracks, segmentLength, fullAnalyses]);
 
   /* ── animation ── */
   const updatePlayhead = () => {
@@ -1392,6 +2165,18 @@ export default function AudioCompareApp() {
     });
   }, []);
 
+  const toggleAnalysisExpand = useCallback(
+    (id) => {
+      setExpandedAnalysis((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    },
+    [],
+  );
+
   const toggleMute = useCallback((id) => {
     setTracks((prev) =>
       prev.map((t) => (t.id === id ? { ...t, muted: !t.muted } : t)),
@@ -1399,7 +2184,12 @@ export default function AudioCompareApp() {
   }, []);
 
   const toggleSolo = useCallback((id) => {
-    setSoloId((prev) => (prev === id ? null : id));
+    setSoloId((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }, []);
 
   const setVolume = useCallback((id, v) => {
@@ -1673,6 +2463,18 @@ export default function AudioCompareApp() {
               <Volume2 size={14} /> {gainMatch ? "Matched" : "Gain Match"}
             </button>
           )}
+          {tracks.length >= 2 && (
+            <button
+              onClick={() => {
+                setCompareA(tracks[0]?.id || null);
+                setCompareB(tracks[1]?.id || null);
+                setComparing(true);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#d4a87a]/40 bg-[#d4a87a]/15 px-3 py-1.5 text-xs font-medium text-[#ffe0b2] hover:bg-[#d4a87a]/25"
+            >
+              <GitCompareArrows size={14} /> Compare
+            </button>
+          )}
         </div>
         {/* Row 2: segment length + playhead */}
         <div className="mx-auto max-w-7xl px-4 pb-2 flex items-center gap-4 flex-wrap">
@@ -1780,7 +2582,7 @@ export default function AudioCompareApp() {
                   singlePlayhead={
                     singlePlayId === track.id ? singlePlayhead : null
                   }
-                  isSolo={soloId === track.id}
+                  isSolo={soloId.has(track.id)}
                   onSeek={seekTo}
                   onSetSegStart={setSegStart}
                   onSetSegmentByDrag={setSegmentByDrag}
@@ -1800,6 +2602,9 @@ export default function AudioCompareApp() {
                   singlePlaying={singlePlayId === track.id}
                   color={TRACK_COLORS[i % TRACK_COLORS.length]}
                   analysis={analyses[track.id]}
+                  fullAnalysis={fullAnalyses[track.id]}
+                  analysisExpanded={expandedAnalysis.has(track.id)}
+                  onToggleAnalysis={toggleAnalysisExpand}
                 />
               </div>
             </div>
@@ -1889,7 +2694,11 @@ export default function AudioCompareApp() {
                   width="540"
                   height="540"
                   viewBox="-1.5 -1.5 3 3"
-                  style={{ touchAction: "none", maxWidth: "min(540px, 88vw)", maxHeight: "min(540px, 88vw)" }}
+                  style={{
+                    touchAction: "none",
+                    maxWidth: "min(540px, 88vw)",
+                    maxHeight: "min(540px, 88vw)",
+                  }}
                   className="border border-[#d4a87a]/40 rounded-2xl bg-gradient-to-br from-[#fdf6f0] to-[#f5e6d0] cursor-crosshair select-none shrink-0 w-full h-auto"
                   onPointerDown={(e) => {
                     e.preventDefault();
@@ -1913,7 +2722,9 @@ export default function AudioCompareApp() {
                       window.removeEventListener("pointermove", move);
                       window.removeEventListener("pointerup", up);
                     };
-                    window.addEventListener("pointermove", move, { passive: false });
+                    window.addEventListener("pointermove", move, {
+                      passive: false,
+                    });
                     window.addEventListener("pointerup", up);
                   }}
                 >
@@ -2250,8 +3061,15 @@ export default function AudioCompareApp() {
                               <ChevronDown size={14} />
                             </button>
                             <button
-                              onClick={() => setSoloId((prev) => (prev === t.id ? null : t.id))}
-                              className={`p-2 rounded-lg text-xs font-bold min-w-[2.5rem] min-h-[2.5rem] flex items-center justify-center ${soloId === t.id ? "bg-[#e8453c] text-white" : "hover:bg-[#f5e6d0] text-[#9a6a40]"}`}
+                              onClick={() =>
+                                setSoloId((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(t.id)) next.delete(t.id);
+                                  else next.add(t.id);
+                                  return next;
+                                })
+                              }
+                              className={`p-2 rounded-lg text-xs font-bold min-w-[2.5rem] min-h-[2.5rem] flex items-center justify-center ${soloId.has(t.id) ? "bg-[#e8453c] text-white" : "hover:bg-[#f5e6d0] text-[#9a6a40]"}`}
                             >
                               <Headphones size={16} />
                             </button>
@@ -2332,7 +3150,214 @@ export default function AudioCompareApp() {
           </div>
         )}
 
-        {/* Analysis sections removed – to be reimplemented */}
+        {/* ── Compare Modal ── */}
+        {comparing && tracks.length >= 2 && (
+          <div
+            className="fixed inset-x-0 top-[3.5rem] bottom-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setComparing(false);
+            }}
+          >
+            <div className="bg-[#fdf6f0] rounded-3xl shadow-2xl w-[96vw] max-w-[800px] max-h-[calc(96vh-3.5rem)] overflow-auto p-4 sm:p-6 relative">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-bold text-[#3a1a00] flex items-center gap-2">
+                  <GitCompareArrows size={20} /> Compare Tracks
+                </h2>
+                <button
+                  onClick={() => setComparing(false)}
+                  className="rounded-full p-1 hover:bg-[#5a2a00]/10 text-[#9a6a40]"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Track selectors */}
+              <div className="flex flex-wrap gap-4 mb-5">
+                <label className="flex items-center gap-2 text-sm text-[#5a2a00]">
+                  <span className="font-semibold">Track A:</span>
+                  <select
+                    value={compareA || ""}
+                    onChange={(e) => setCompareA(e.target.value)}
+                    className="rounded-lg border border-[#d4a87a] bg-white px-2 py-1 text-sm text-[#3a1a00]"
+                  >
+                    {tracks.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex items-center gap-2 text-sm text-[#5a2a00]">
+                  <span className="font-semibold">Track B:</span>
+                  <select
+                    value={compareB || ""}
+                    onChange={(e) => setCompareB(e.target.value)}
+                    className="rounded-lg border border-[#d4a87a] bg-white px-2 py-1 text-sm text-[#3a1a00]"
+                  >
+                    {tracks.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              {/* Comparison results */}
+              {(() => {
+                const bufA = decodedBuffers.current[compareA];
+                const bufB = decodedBuffers.current[compareB];
+                if (!bufA || !bufB || compareA === compareB) {
+                  return (
+                    <p className="text-sm text-[#9a6a40] italic">
+                      {compareA === compareB
+                        ? "Select two different tracks to compare."
+                        : "Waiting for decoded audio…"}
+                    </p>
+                  );
+                }
+                const tA = tracks.find((t) => t.id === compareA);
+                const tB = tracks.find((t) => t.id === compareB);
+                if (!tA || !tB) return null;
+                const fromA = tA.segStart || 0;
+                const toA = Math.min(fromA + segmentLength, tA.duration);
+                const fromB = tB.segStart || 0;
+                const toB = Math.min(fromB + segmentLength, tB.duration);
+                const aFull = fullAnalyses[compareA] || analyzeTrackFull(bufA, fromA, toA);
+                const bFull = fullAnalyses[compareB] || analyzeTrackFull(bufB, fromB, toB);
+                const specSim = spectralSimilarity(
+                  aFull.spectrum,
+                  bFull.spectrum,
+                );
+                const corrNormal = crossCorrelation(bufA, bufB, fromA, toA, fromB, toB, false);
+                const corrInverted = crossCorrelation(bufA, bufB, fromA, toA, fromB, toB, true);
+                const isPhaseInverted = corrInverted > corrNormal + 0.05;
+                const corr = Math.max(corrNormal, corrInverted);
+
+                // natural-language conclusion
+                const conclusions = [];
+                const rmsAdb = 20 * Math.log10(Math.max(aFull.rms, 1e-10));
+                const rmsBdb = 20 * Math.log10(Math.max(bFull.rms, 1e-10));
+                const rmsDiff = Math.abs(rmsAdb - rmsBdb);
+                if (rmsDiff > 3)
+                  conclusions.push(
+                    `${rmsAdb > rmsBdb ? tA.name : tB.name} is noticeably louder (${rmsDiff.toFixed(1)} dB).`,
+                  );
+                else if (rmsDiff > 1)
+                  conclusions.push(
+                    `Small volume difference (${rmsDiff.toFixed(1)} dB).`,
+                  );
+                else
+                  conclusions.push("Tracks are approximately the same volume.");
+
+                if (specSim != null) {
+                  if (specSim > 0.95) conclusions.push("Nearly identical tonal color.");
+                  else if (specSim > 0.8) conclusions.push("Relatively similar tonal color.");
+                  else if (specSim > 0.5) conclusions.push("Noticeably different tonal color.");
+                  else conclusions.push("Very different tonal color.");
+                }
+
+                if (corr != null) {
+                  if (corr > 0.9) conclusions.push("Tracks are very similar (high correlation).");
+                  else if (corr > 0.6) conclusions.push("Tracks share many similarities.");
+                  else if (corr > 0.3) conclusions.push("Tracks share some commonality.");
+                  else conclusions.push("Tracks are relatively different in waveform.");
+                  if (isPhaseInverted) conclusions.push("Note: Track B appears phase-inverted relative to Track A.");
+                }
+
+                if (aFull.bpm > 0 && bFull.bpm > 0) {
+                  const bpmDiff = Math.abs(aFull.bpm - bFull.bpm);
+                  if (bpmDiff < 1) conclusions.push("Same tempo.");
+                  else if (bpmDiff < 5) conclusions.push(`Nearly the same tempo (${bpmDiff.toFixed(1)} BPM difference).`);
+                  else conclusions.push(`Different tempo (${aFull.bpm.toFixed(1)} vs ${bFull.bpm.toFixed(1)} BPM).`);
+                }
+
+                return (
+                  <div className="space-y-4">
+                    {/* Metrics grid */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="rounded-xl bg-[#faf0e6] border border-[#d4a87a]/30 p-3">
+                        <h3 className="text-xs font-semibold text-[#9a6a40] mb-2 truncate">{tA.name}</h3>
+                        <div className="space-y-1 text-[11px] text-[#5a2a00]">
+                          <div>BPM: <b>{aFull.bpm > 0 ? aFull.bpm.toFixed(1) : "N/A"}</b>{aFull.bpmConfidence > 0 && <span className="text-[#9a6a40]"> ({(aFull.bpmConfidence * 100).toFixed(0)}%)</span>}</div>
+                          <div>RMS: <b>{dbStr(aFull.rms)}</b></div>
+                          <div>Peak: <b>{dbStr(aFull.peak)}</b></div>
+                          <div>Centroid: <b>{aFull.centroid.toFixed(0)} Hz</b></div>
+                          <div>Crest: <b>{aFull.crestFactorDb.toFixed(1)} dB</b></div>
+                        </div>
+                      </div>
+                      <div className="rounded-xl bg-[#faf0e6] border border-[#d4a87a]/30 p-3">
+                        <h3 className="text-xs font-semibold text-[#9a6a40] mb-2 truncate">{tB.name}</h3>
+                        <div className="space-y-1 text-[11px] text-[#5a2a00]">
+                          <div>BPM: <b>{bFull.bpm > 0 ? bFull.bpm.toFixed(1) : "N/A"}</b>{bFull.bpmConfidence > 0 && <span className="text-[#9a6a40]"> ({(bFull.bpmConfidence * 100).toFixed(0)}%)</span>}</div>
+                          <div>RMS: <b>{dbStr(bFull.rms)}</b></div>
+                          <div>Peak: <b>{dbStr(bFull.peak)}</b></div>
+                          <div>Centroid: <b>{bFull.centroid.toFixed(0)} Hz</b></div>
+                          <div>Crest: <b>{bFull.crestFactorDb.toFixed(1)} dB</b></div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Similarity bars */}
+                    <div className="space-y-2">
+                      {specSim != null && (
+                        <div>
+                          <div className="flex justify-between text-[11px] text-[#5a2a00] mb-0.5">
+                            <span>Spectral Similarity</span>
+                            <span className="font-bold">{(specSim * 100).toFixed(0)}%</span>
+                          </div>
+                          <div className="h-2 rounded-full bg-[#d4a87a]/20 overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-[#f5a623] to-[#e8453c]"
+                              style={{ width: `${specSim * 100}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                      {corr != null && (
+                        <div>
+                          <div className="flex justify-between text-[11px] text-[#5a2a00] mb-0.5">
+                            <span className="flex items-center gap-1.5">
+                              Waveform Correlation
+                              {isPhaseInverted && (
+                                <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[#e8453c]/15 text-[#e8453c] border border-[#e8453c]/30" title="Track B appears to be phase-inverted relative to Track A">
+                                  Ø Phase inverted
+                                </span>
+                              )}
+                            </span>
+                            <span className="font-bold">{(corr * 100).toFixed(0)}%</span>
+                          </div>
+                          <div className="h-2 rounded-full bg-[#d4a87a]/20 overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-[#d4a87a] to-[#f5a623]"
+                              style={{ width: `${corr * 100}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Spectrogram waterfall overlay */}
+                    <SpectrogramOverlay
+                      bufA={bufA}
+                      bufB={bufB}
+                      fromA={fromA}
+                      toA={toA}
+                      fromB={fromB}
+                      toB={toB}
+                    />
+
+                    {/* Natural language conclusion */}
+                    <div className="rounded-xl bg-[#3a1a00] p-4 text-sm text-[#ffe0b2] leading-relaxed">
+                      <span className="font-bold text-[#f5a623]">Summary: </span>
+                      {conclusions.join(" ")}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
 
         {/* ─ A/B Crossfader Modal ─ */}
         {showABFader && tracks.length >= 2 && (

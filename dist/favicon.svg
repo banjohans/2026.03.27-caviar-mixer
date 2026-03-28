@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="r" cx="35%" cy="30%" r="50%">
+      <stop offset="0%" stop-color="#ff9a7b"/>
+      <stop offset="60%" stop-color="#e8453c"/>
+      <stop offset="100%" stop-color="#b22a1a"/>
+    </radialGradient>
+    <radialGradient id="o1" cx="35%" cy="30%" r="50%">
+      <stop offset="0%" stop-color="#ffcf5e"/>
+      <stop offset="60%" stop-color="#f5a623"/>
+      <stop offset="100%" stop-color="#c97b0a"/>
+    </radialGradient>
+    <radialGradient id="o2" cx="35%" cy="30%" r="50%">
+      <stop offset="0%" stop-color="#ffe08a"/>
+      <stop offset="60%" stop-color="#f0892d"/>
+      <stop offset="100%" stop-color="#bf5e0a"/>
+    </radialGradient>
+  </defs>
+  <!-- top sphere -->
+  <circle cx="32" cy="18" r="15" fill="url(#o2)" stroke="#4a1a00" stroke-width="2"/>
+  <ellipse cx="28" cy="13" rx="4" ry="3" fill="white" opacity="0.6"/>
+  <!-- bottom-left sphere (red) -->
+  <circle cx="19" cy="42" r="15" fill="url(#r)" stroke="#4a1a00" stroke-width="2"/>
+  <ellipse cx="15" cy="37" rx="4" ry="3" fill="white" opacity="0.6"/>
+  <!-- bottom-right sphere (orange) -->
+  <circle cx="45" cy="42" r="15" fill="url(#o1)" stroke="#4a1a00" stroke-width="2"/>
+  <ellipse cx="41" cy="37" rx="4" ry="3" fill="white" opacity="0.6"/>
+</svg>
