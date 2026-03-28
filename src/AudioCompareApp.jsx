@@ -1065,33 +1065,28 @@ export default function AudioCompareApp() {
   }, [tracks, gainMatch]);
 
   /* apply gain compensation via GainNodes */
-  useEffect(() => {
-    tracks.forEach((t) => {
-      const node = gainNodes.current[t.id];
-      if (!node) return;
-      node.gain.value = gainMatch ? (gainCompensation[t.id] ?? 1) : 1;
-    });
-  }, [tracks, gainMatch, gainCompensation]);
-
-  /* volume logic */
+  /* volume + mute + solo + crossfader logic — all through GainNode for iOS compatibility */
   useEffect(() => {
     tracks.forEach((track, i) => {
-      if (!track.audio) return;
+      const node = gainNodes.current[track.id];
+      if (!node) return;
+      const comp = gainMatch ? (gainCompensation[track.id] ?? 1) : 1;
+      let v;
       if (soloId && track.id !== soloId) {
-        track.audio.volume = 0;
-        return;
-      }
-      let v = track.muted ? 0 : track.volume;
-      if (tracks.length >= 2) {
-        if (abMode) {
-          if (i === abTrackA) v *= 1 - abValue;
-          else if (i === abTrackB) v *= abValue;
-          else v = 0;
-        } else if (showCrossfader) {
-          v *= mixWeights[i] ?? 0;
+        v = 0;
+      } else {
+        v = track.muted ? 0 : track.volume;
+        if (tracks.length >= 2) {
+          if (abMode) {
+            if (i === abTrackA) v *= 1 - abValue;
+            else if (i === abTrackB) v *= abValue;
+            else v = 0;
+          } else if (showCrossfader) {
+            v *= mixWeights[i] ?? 0;
+          }
         }
       }
-      track.audio.volume = clamp(v, 0, 1);
+      node.gain.value = clamp(v, 0, 1) * comp;
     });
   }, [
     tracks,
@@ -1102,6 +1097,8 @@ export default function AudioCompareApp() {
     abTrackB,
     abValue,
     showCrossfader,
+    gainMatch,
+    gainCompensation,
   ]);
 
   /* apply pan */
@@ -1297,7 +1294,6 @@ export default function AudioCompareApp() {
       if (audioCtxRef.current?.state === "suspended")
         audioCtxRef.current.resume();
       t.audio.currentTime = t.segStart || 0;
-      t.audio.volume = t.muted ? 0 : t.volume;
       t.audio.play();
       setSinglePlayId(id);
       singleTrackRef.current = t;
