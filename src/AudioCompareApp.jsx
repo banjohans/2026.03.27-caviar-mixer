@@ -1209,6 +1209,8 @@ export default function AudioCompareApp() {
     const sl = segmentLengthRef.current;
     const safe = 0;
     syncTimes(safe);
+    if (audioCtxRef.current?.state === "suspended")
+      audioCtxRef.current.resume();
     tracksRef.current.forEach((t) => {
       if (!t.audio) return;
       try {
@@ -1230,6 +1232,8 @@ export default function AudioCompareApp() {
     const safe = clamp(from, 0, Math.max(0, sl - 0.01));
     stopTimers();
     syncTimes(safe);
+    if (audioCtxRef.current?.state === "suspended")
+      await audioCtxRef.current.resume();
     for (const t of tracksRef.current) {
       if (!t.audio) continue;
       try {
@@ -1290,6 +1294,8 @@ export default function AudioCompareApp() {
       pauseAll();
       const t = tracks.find((t) => t.id === id);
       if (!t?.audio) return;
+      if (audioCtxRef.current?.state === "suspended")
+        audioCtxRef.current.resume();
       t.audio.currentTime = t.segStart || 0;
       t.audio.volume = t.muted ? 0 : t.volume;
       t.audio.play();
@@ -1728,7 +1734,8 @@ export default function AudioCompareApp() {
         {/* ─ Tracks ─ */}
         {tracks.length === 0 && (
           <div className="rounded-2xl border border-dashed border-[#d4a87a] bg-white/80 p-12 text-center text-sm text-[#9a6a40]">
-            No audio or video files loaded yet. Click "Add files" to get started. Video files will have their audio extracted automatically.
+            No audio or video files loaded yet. Click "Add files" to get
+            started. Video files will have their audio extracted automatically.
           </div>
         )}
 
