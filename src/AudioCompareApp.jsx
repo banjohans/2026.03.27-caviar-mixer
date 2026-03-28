@@ -1716,7 +1716,7 @@ export default function AudioCompareApp() {
           <input
             ref={fileInputRef}
             type="file"
-            accept="audio/*"
+            accept="audio/*,video/*,.wav,.mp3,.ogg,.flac,.aac,.m4a,.wma,.aiff,.mp4,.webm,.mov,.mkv"
             multiple
             className="hidden"
             onChange={handleFiles}
@@ -1728,7 +1728,7 @@ export default function AudioCompareApp() {
         {/* ─ Tracks ─ */}
         {tracks.length === 0 && (
           <div className="rounded-2xl border border-dashed border-[#d4a87a] bg-white/80 p-12 text-center text-sm text-[#9a6a40]">
-            No audio files loaded yet. Click "Add files" to get started.
+            No audio or video files loaded yet. Click "Add files" to get started. Video files will have their audio extracted automatically.
           </div>
         )}
 
